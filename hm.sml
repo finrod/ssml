@@ -6,11 +6,44 @@ struct
     fun freshTy () = 
         A.TyVar (!tyvarCounter) before tyvarCounter := (!tyvarCounter) + 1
 
-    val constraints : (Ast.ty * Ast.ty) list ref = ref []
-
-    fun addConstr (t,t') = constraints := (t,t') :: (!constraints) 
-
     structure UF = IUnionFind
+
+    (* Kinding of types. Req's an environment mapping tyids to kinds and possibly definitions *)
+    fun infKnd D (A.TyId x) =
+	(case List.find (fn (y, _, _) => x = y) D of
+	     SOME (_, k, _) => k
+	   | NONE => raise Fail ("Undefined type identifier t" ^ A.ppid x))
+      | infKnd D (A.TyVar x) = A.KTy
+      | infKnd D (A.TyPoly x) = A.KTy
+      | infKnd D (t as A.TyApp (t1, t2)) =
+	let val f = Fail ("Kind mismatch at type expression " ^ A.ppty t)
+	in (case infKnd D t1 of
+		A.KArr (k1, k2) => if infKnd D t2 = k1 then k2 else raise f
+	      | _ => raise f)
+	end
+      | infKnd D (A.TySig ds) = A.KSig before chckSigKnd D ds
+      | infKnd D (t as A.TyArrow (t1, t2)) =
+	(case (infKnd D t1, infKnd D t2) of
+	     (A.KSig, A.KTy) => A.KTy
+	   | (A.KTy, A.KTy) => A.KTy
+	   | (A.KSig, A.KSig) => A.KSig (* kind of types of functors (if I get it right, that is) *)
+	   | _ => raise Fail ("Higher-order modules or some weird miskinding in " ^ A.ppty t))
+      | infKnd D (A.TyLam (x, k, t)) =
+	let val kb = infKnd ((x, k, NONE) :: D) t
+	in (A.KArr (k, kb)) end
+
+    and chckSigKnd D [] = ()
+      | chckSigKnd D (A.TyDef (x, t) :: ds) =
+	let val k = infKnd D t
+	in chckSigKnd ((x, k, SOME t) :: D) ds
+	end
+      | chckSigKnd D (A.TyDec (x, k) :: ds) =
+	chckSigKnd ((x, k, NONE) :: D) ds
+      | chckSigKnd D ((d as A.ValDec (x, t)) :: ds) =
+	if infKnd D t = A.KTy then chckSigKnd D ds
+	else raise Fail ("Ill-kinded value declaration: " ^ A.ppdec d)
+      | chckSigKnd D (d :: ds) =
+	raise Fail ("Illegal construct in signature type: " ^ A.ppdec d)
 
     val tysets : (A.id * (A.ty UF.set)) list ref = ref []
 
@@ -27,7 +60,7 @@ struct
       | force t = t
 
     fun forceAll t =
-	let fun aux (A.TyCon (t1, t2)) = A.TyCon (forceAll t1, forceAll t2)
+	let fun aux (A.TyApp (t1, t2)) = A.TyApp (forceAll t1, forceAll t2)
 	      | aux (A.TyArrow (t1, t2)) = A.TyArrow (forceAll t1, forceAll t2)
 	      | aux t = t
 	in aux (force t)
@@ -36,230 +69,122 @@ struct
     fun occursUF i t =
 	(case t of
 	     A.TyArrow (t1, t2) => occursUF i (force t1) orelse occursUF i (force t2)
-	   | A.TyCon   (t1, t2) => occursUF i (force t1) orelse occursUF i (force t2)
+	   | A.TyApp   (t1, t2) => occursUF i (force t1) orelse occursUF i (force t2)
 	   | A.TyVar j => i = j
 	   | _ => false)
 
-    fun pickCanon (A.TyVar _, t) = t
-      | pickCanon (t, A.TyVar _) = t
-      | pickCanon (t1, t2) =
+    fun pickCanon _ (A.TyVar _, t) = t
+      | pickCanon _ (t, A.TyVar _) = t
+      | pickCanon D (t1, t2) =
 	if t1 = t2 then t1
 	else raise Fail ("Non-substitution union called on " ^ A.ppty t1 ^ " and " ^ A.ppty t2)
 
-    fun solve (A.TyVar x, A.TyVar y) =
-	UF.union pickCanon (getSet x) (getSet y)
-      | solve (A.TyVar x, tr) =
+    fun solve D (A.TyVar x, A.TyVar y) =
+	UF.union (pickCanon D) (getSet x) (getSet y)
+      | solve D (A.TyVar x, tr) =
 	if occursUF x tr then
 	    raise Fail ("Circular type constraints: " ^ A.ppty (A.TyVar x) ^ " in " ^ A.ppty tr)
-	else UF.union pickCanon (getSet x) (UF.new tr)
-      | solve (tl, tr as A.TyVar x) = solve (tr, tl)
-      | solve (t1 as A.TyId a, t2 as A.TyId b) =
+	else UF.union (pickCanon D) (getSet x) (UF.new tr)
+      | solve D (tl, tr as A.TyVar x) = solve D (tr, tl)
+      | solve D (t1 as A.TyId a, t2 as A.TyId b) =
         if a = b then () else raise Fail ("Type error: " ^ A.ppty t1 ^ " =/= " ^ A.ppty t2)
-      | solve (A.TyPoly a, A.TyPoly b) =
+      | solve D (A.TyPoly a, A.TyPoly b) =
         if a = b then () else raise Fail ("Polymorphic unification")
-      | solve (A.TyCon (t1, c1), A.TyCon (t2, c2)) =
-	(solve (force t1, force t2); solve (force c1, force c2))
-      | solve (A.TyArrow (t1, t2), A.TyArrow (t3, t4)) =
-        (solve (force t1, force t3); solve (force t2, force t4))
-      | solve (t1, t2) = raise Fail ("Type error: " ^ A.ppty t1 ^ " =/= " ^ A.ppty t2)
+      | solve D (A.TyApp (t1, c1), A.TyApp (t2, c2)) =
+	(solve D (force t1, force t2); solve D (force c1, force c2))
+      | solve D (A.TyArrow (t1, t2), A.TyArrow (t3, t4)) =
+        (solve D (force t1, force t3); solve D (force t2, force t4))
+      | solve D (t1, t2) = raise Fail ("Type error: " ^ A.ppty t1 ^ " =/= " ^ A.ppty t2)
 
-    fun solveList xs = List.foldl (fn (c, ()) => solve c) () xs
+    fun solveList D xs = List.foldl (fn (c, ()) => solve D c) () xs
 
     fun mkPoly k (t as A.TyVar x) = if k > x then t else A.TyPoly x
-      | mkPoly k (A.TyCon (t1, t2)) = A.TyCon (mkPoly k (force t1), mkPoly k (force t2))
+      | mkPoly k (A.TyApp (t1, t2)) = A.TyApp (mkPoly k (force t1), mkPoly k (force t2))
       | mkPoly k (A.TyArrow (t1, t2)) = A.TyArrow (mkPoly k (force t1), mkPoly k (force t2))
       | mkPoly k t = t
-	
-	(*let fun aux P (t as A.TyVar x) =
-		if k > x then (P, t)
-		else ((P, lookup P x)
-		      handle _ => let val tv = freshTy ()
-				  in ((x, tv) :: P, tv)
-				  end)
-	      | aux P (t as A.TyId x) = (P, t)
-	      | aux P (A.TyPoly (x, t)) =
-		raise Fail ("Impossible: non-instantiated polymorphic type")
-	      | aux P (A.TyCon (t1, t2)) =
-		let val (P', t1') = aux P (force t1)
-		    val (P'', t2') = aux P' (force t2)
-		in (P'', A.TyCon (t1', t2'))
-		end
-	      | aux P (A.TySig _) = raise Fail ("Type error: signature as a return type")
-	      | aux P (A.TyArrow (t1, t2)) =
-		let val (P', t1') = aux P (force t1)
-		    val (P'', t2') = aux P' (force t2)
-		in (P'', A.TyArrow (t1', t2'))
-		end
-	    val (P, t') = aux [] t
-	in List.foldl (fn ((_, A.TyVar x), t) => A.TyPoly (x, t)) t' P
-	end*)
 
     fun instantiate P (A.TyPoly x) =
-	((P, lookup P x) handle _ => let val t = freshTy () in ((x, t) :: P, t) end)
-      | instantiate P (A.TyCon (t1, t2)) =
-	let val (P1, t1') = instantiate P  (force t1)
-	    val (P2, t2') = instantiate P1 (force t2)
-	in (P2, A.TyCon (t1', t2'))
+	(lookup (!P) x handle _ => let val t = freshTy () in t before P := (x, t) :: !P end)
+      | instantiate P (A.TyApp (t1, t2)) =
+	let val t1' = instantiate P (force t1)
+	    val t2' = instantiate P (force t2)
+	in A.TyApp (t1', t2')
 	end
       | instantiate P (A.TyArrow (t1, t2)) =
-	let val (P1, t1') = instantiate P  (force t1)
-	    val (P2, t2') = instantiate P1 (force t2)
-	in (P2, A.TyArrow (t1', t2'))
+	let val t1' = instantiate P (force t1)
+	    val t2' = instantiate P (force t2)
+	in A.TyArrow (t1', t2')
 	end
-      | instantiate P t = (P, t)
+      | instantiate _ t = t
 
-    fun tyinfExp G (A.Fn (i, e, NONE)) =
+    fun tyinfExp D G (A.Fn (i, e, NONE)) =
 	let val t = freshTy ()
-	    val (t', e') = tyinfExp ((i, t) :: G) e
+	    val (t', e') = tyinfExp D ((i, t) :: G) e
 	    val tx = A.TyArrow (t, t')
 	in (tx, A.Fn (i, e', SOME tx))
 	end
-      | tyinfExp G (A.App (e1, e2, NONE)) =
-	let val (t1, e1') = tyinfExp G e1
-	    val (t2, e2') = tyinfExp G e2
+      | tyinfExp D G (A.App (e1, e2, NONE)) =
+	let val (t1, e1') = tyinfExp D G e1
+	    val (t2, e2') = tyinfExp D G e2
 	    val tr = freshTy ()
-	    val _  = (print ("Solving " ^ A.ppty (force t1) ^ " = " ^ A.ppty (A.TyArrow (t2, tr)) ^ "\n");
-		      solve (force t1, A.TyArrow (t2, tr)))
+	    val _  = solve D (force t1, A.TyArrow (t2, tr))
 	in (tr, A.App (e1', e2', SOME (forceAll tr)))
 	end
-      | tyinfExp G (A.Var (x, NONE)) =
-	let val (_, t) = instantiate [] (lookup G x)
+      | tyinfExp D G (A.Var (x, NONE)) =
+	let val t = instantiate (ref []) (lookup G x)
 	in (t, A.Var (x, SOME t))
 	end
-      | tyinfExp G (A.Let (ds, e, NONE)) =
-	let val (G', ds') = tyinfDecList G ds
-	    val (t, e') = tyinfExp G' e
+      | tyinfExp D G (A.Let (ds, e, NONE)) =
+	let val (D', G', ds') = tyinfDecList D G ds
+	    val (t, e') = tyinfExp D' G' e
 	in (t, A.Let (ds', e', SOME t))
 	end
-      | tyinfExp G (A.Ann (e, t)) =
-	let val (t', e') = tyinfExp G e
+      | tyinfExp D G (A.Ann (e, t)) =
+	let val (t', e') = tyinfExp D G e
 	    val _ = solve (t', t)
 	in (t, e')
 	end
-      | tyinfExp G e =
+      | tyinfExp D G (e as A.Literal t) = (t, e)
+      | tyinfExp D G e =
         raise (Fail ("Unhandled expression in tyinfExp: " ^ A.ppexp e))
 
-    and tyinfDec G (A.ValBind (i, NONE, e)) =
+    and tyinfDec D G (A.ValBind (i, NONE, e)) =
 	let val k = !tyvarCounter
-	    val (t, e') = tyinfExp G e
+	    val (t, e') = tyinfExp D G e
 	    val t' = mkPoly k (force t)
-	in ((i, t') :: G, A.ValBind (i, SOME t', e'))
+	in (D, (i, t') :: G, A.ValBind (i, SOME t', e'))
 	end
-      | tyinfDec G (A.ValRecBind (i, NONE, e)) =
+      | tyinfDec D G (A.ValRecBind (i, NONE, e)) =
 	let val k = !tyvarCounter
 	    val t = freshTy ()
-	    val (t', e') = tyinfExp ((i, t) :: G) e
+	    val (t', e') = tyinfExp D ((i, t) :: G) e
 	    val _ = solve (t, t')
 	    val t'' = mkPoly k (force t')
-	in ((i, t'') :: G, A.ValRecBind (i, SOME t'', e'))
+	in (D, (i, t'') :: G, A.ValRecBind (i, SOME t'', e'))
 	end
-      | tyinfDec G d =
+      (* Code a slightly duplicated between here and kinding of signature types *)
+      | tyinfDec D G (d as A.TyDec (x, k)) = ((x, k, NONE) :: D, G, d)
+      | tyinfDec D G (d as A.TyDef (x, t)) =
+	let val k = infKnd D t
+	in ((x, k, SOME t) :: D, G, d)
+	end
+      | tyinfDec D G (d as A.ValDec (x, t)) =
+	let val k = infKnd D t
+	in if k = A.KTy then (D, (x, t) :: G, d)
+	   else raise Fail ("Ill kinded value declaration " ^ A.ppdec d)
+	end
+      | tyinfDec D G (d as A.SigDec (x, ps, t as A.TySig ds)) =
+	let val t = List.foldr (fn ((x, k), t) => A.TyLam (x, k, t)) t ps
+	    val k = infKnd D t
+	in ((x, k, SOME t) :: D, G, d)
+	end
+      | tyinfDec D G d =
 	raise Fail ("Unhandled declaration in tyinfDec: " ^ A.ppdec d)
 
-    and tyinfDecList G ds =
-	List.foldl (fn (d, (G, ds)) =>
-		       let val (G', d') = tyinfDec G d
-		       in (G', d'::ds) end) (G, []) ds
+    and tyinfDecList D G ds =
+	List.foldl (fn (d, (D, G, ds)) =>
+		       let val (D', G', d') = tyinfDec D G d
+		       in (D', G', d'::ds) end) (D, G, []) ds
 
-(*    fun constrExp (A.Fn (i,e,NONE)) =
-    let
-        val t = freshTy ()
-        val _ = Symtab.insert i t
-        val (t',e') = constrExp e
-        val tx = A.TyArrow (t,t') 
-    in
-        (tx, A.Fn (i, e', SOME tx))
-    end
-      | constrExp (A.Var (i,NONE)) =
-    let
-        val t = Symtab.lookup i handle _ => 
-            let
-                val t' = freshTy ()
-                val _ = Symtab.insert i t'
-            in
-                t'
-            end
-    in
-        (t, A.Var (i, SOME t))
-    end
-      | constrExp (A.App (e1,e2,NONE)) =
-    let
-        val (t1,e1') = constrExp e1
-        val (t2,e2') = constrExp e2
-        val tx' = freshTy ()
-        val _ = addConstr (t1, A.TyArrow (t2,tx'))
-    in
-        (tx', A.App (e1,e2,SOME tx'))
-    end
-      | constrExp (A.Ann (e,t)) =
-    let
-        val (t',e') = constrExp e
-        val _ = addConstr (t',t)
-    in
-        (t,e')
-    end
-      | constrExp (A.Let (l,e,NONE)) =
-    let
-        val l' = List.map constrDec l
-    in
-        constrExp e
-    end
-      | constrExp (A.Literal t) = (t, A.Literal t)
-      | constrExp e = 
-        raise (Fail ("Unhandled expression in constrExp: " ^ A.ppexp e))
-
-    and constrDec (A.ValBind (i,NONE,e)) =
-    let
-        val (t,e') = constrExp e
-        val _ = Symtab.insert i t
-    in
-        A.ValBind (i, SOME t, e')
-    end
-      | constrDec (A.ValRecBind (i,NONE,e)) =
-    let
-        val t = freshTy ()
-        val _ = Symtab.insert i t
-        val (t',e') = constrExp e
-        val _ = addConstr (t,t')
-    in
-        A.ValRecBind (i, SOME t, e')
-    end
-      | constrDec _ = raise (Fail "Not implemented")
-
-
-    fun substinconstr tn th l =
-        map (fn (x,y) => (A.substinty tn th x, A.substinty tn th y)) l
-
-    fun unify [] = []
-      | unify ((A.TyVar x, t2) :: rest) =
-            if t2 = A.TyVar x then unify rest
-            else if A.occursin (A.TyVar x) t2 then
-                raise Fail "Circular type constraints"
-            else (unify (substinconstr (A.TyVar x) t2 rest)) @ [(A.TyVar x, t2)]
-      | unify ((t1, A.TyVar x) :: rest) =
-            if t1 = A.TyVar x then unify rest
-            else if A.occursin (A.TyVar x) t1 then
-                raise Fail "Circular type constraints"
-            else (unify (substinconstr (A.TyVar x) t1 rest)) @ [(A.TyVar x, t1)]
-      | unify ((t1 as A.TyId a, t2 as A.TyId b) :: rest) =
-            if a = b then unify rest
-            else raise Fail ("Type error: " ^ A.ppty t1 ^ " =/= " ^ A.ppty t2)
-      | unify ((A.TyPoly a, A.TyPoly b) :: rest) =
-            if a = b then unify rest
-            else raise Fail ("Polymorphic unification")
-      | unify ((A.TyCon (t1,c1), A.TyCon (t2,c2)) :: rest) =
-            unify ((t1,t2) :: (c1,c2) :: rest)
-      | unify ((A.TyArrow (t1,t2), A.TyArrow (t3,t4)) :: rest) =
-            unify ((t1,t3) :: (t2,t4) :: rest)
-      | unify ((t1,t2) :: rest) =
-            raise Fail ("Type error: " ^ A.ppty t1 ^ " =/= " ^ A.ppty t2)*)
-
-    fun printConstr' l = 
-            String.concatWith "\n" 
-                (map (fn (t1,t2) => A.ppty t1 ^ " = " ^ A.ppty t2) l)
-
-    fun printConstr () = printConstr' (!constraints)
-
-    fun reset () = constraints := []
  end
 

@@ -18,6 +18,20 @@ struct
     val example4
       = Ast.ValRecBind (a, NONE, Ast.Fn (x, Ast.App (Ast.Var (a, NONE), Ast.Var (x, NONE), NONE), NONE))
 
+    val monad = 2
+    val t = 3
+    val return = 4
+    val bind = 5
+
+    val monadDecl
+      = Ast.SigDec (monad, [(t, Ast.KArr (Ast.KTy, Ast.KTy))], Ast.TySig
+				[Ast.ValDec (return, Ast.TyArrow (Ast.TyPoly x, Ast.TyApp (Ast.TyId t, Ast.TyPoly x))),
+				 Ast.ValDec (bind, Ast.TyArrow (Ast.TyApp (Ast.TyId t, Ast.TyPoly a), Ast.TyArrow (Ast.TyArrow (Ast.TyPoly a, Ast.TyApp (Ast.TyId t, Ast.TyPoly x)), Ast.TyApp (Ast.TyId t, Ast.TyPoly x))))])
+
+    val monadType = Ast.TyLam (t, Ast.KArr (Ast.KTy, Ast.KTy), Ast.TySig
+				[Ast.ValDec (return, Ast.TyArrow (Ast.TyPoly x, Ast.TyApp (Ast.TyId t, Ast.TyPoly x))),
+				 Ast.ValDec (bind, Ast.TyArrow (Ast.TyApp (Ast.TyId t, Ast.TyPoly a), Ast.TyArrow (Ast.TyArrow (Ast.TyPoly a, Ast.TyApp (Ast.TyId t, Ast.TyPoly x)), Ast.TyApp (Ast.TyId t, Ast.TyPoly x))))])
+
 (*    fun run' e =
         let
             val s = HM.reset ()
