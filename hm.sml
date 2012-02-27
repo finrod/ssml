@@ -117,11 +117,17 @@ struct
 	end
       | instantiate _ t = t
 
-    fun tyinfExp D G (A.Fn (i, e, NONE)) =
-	let val t = freshTy ()
+    fun tyinfExp D G (A.Fn (a, e, NONE)) =
+	let val (t, i) = (case a of
+			      A.Expl (i, NONE) => (freshTy (), i)
+			    | A.Expl (i, SOME t) => (t, i)
+			    | A.Impl (i, t) => (t, i))
 	    val (t', e') = tyinfExp D ((i, t) :: G) e
 	    val tx = A.TyArrow (t, t')
-	in (tx, A.Fn (i, e', SOME tx))
+	    val a' = (case a of
+			  A.Expl _ => A.Expl (i, SOME t)
+			| _ => a)
+	in (tx, A.Fn (a', e', SOME tx))
 	end
       | tyinfExp D G (A.App (e1, e2, NONE)) =
 	let val (t1, e1') = tyinfExp D G e1
@@ -174,10 +180,18 @@ struct
 	   else raise Fail ("Ill kinded value declaration " ^ A.ppdec d)
 	end
       | tyinfDec D G (d as A.SigDec (x, ps, t as A.TySig ds)) =
-	let val t = List.foldr (fn ((x, k), t) => A.TyLam (x, k, t)) t ps
-	    val k = infKnd D t
-	in ((x, k, SOME t) :: D, G, d)
+	let val nt = A.foldO (fn (x, k) => A.TyLam (x, k, t)) t ps
+	    val k = infKnd D nt
+	in ((x, k, SOME nt) :: D, G, d)
 	end
+      | tyinfDec D G (d as A.Struct (ds, NONE)) =
+	let val (D', G', ds') = tyinfDecList D G ds
+	in (D, G, A.Struct (ds', SOME (A.TySig ds')))
+	end
+	(* TODO: get the proper signature type from the definitions *)
+(*      | tyinfDec D G (d as A.StructDec (x, d, ot)) =
+	let val (D', G', d') = tyinfDec D G d
+	    val k = infKnd D' (getType d')*)
       | tyinfDec D G d =
 	raise Fail ("Unhandled declaration in tyinfDec: " ^ A.ppdec d)
 

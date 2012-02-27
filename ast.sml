@@ -7,8 +7,9 @@ struct
       | KSig
       | KArr of knd * knd
 
+
     (* Kinds in the sig definition allows for checking instead of inference on
-     * kind level; will disappear at some point *)
+     * kind level; may disappear at some point *)
     datatype ty =
         TyId of id
       | TyVar of id
@@ -17,13 +18,17 @@ struct
       | TySig of dec list
       | TyArrow of ty * ty
       | TyLam of id * knd * ty
+    and arg =
+	Expl of id * ty option
+      | Impl of id * ty
     and exp =
-        Fn of id * exp * ty option
+        Fn of arg * exp * ty option
       | Var of id * ty option
       | App of exp * exp * ty option
       | Ann of exp * ty
       | Let of dec list * exp * ty option
       | Literal of ty
+      | LongName of exp * id * ty option
     and dec =
         ValBind of id * ty option * exp
       | ValRecBind of id * ty option * exp
@@ -32,7 +37,7 @@ struct
       | ValDec of id * ty
       | Struct of dec list * ty option
       | StructDec of id * dec * ty option
-      | SigDec of id * (id * knd) list * ty
+      | SigDec of id * (id * knd) option * ty
     
     val ppid = Int.toString
 
@@ -60,6 +65,9 @@ struct
               | _ => false)
       | occursin _ _ = raise Fail ("Invalid argument to occursin")
 
+    fun foldO s n (SOME v) = s v
+      | foldO s n NONE = n
+
     fun ppknd KTy = "*"
       | ppknd KSig = "&"
       | ppknd (KArr (k1, k2)) = "( " ^ ppknd k1 ^ " -> " ^ ppknd k2 ^ " )"
@@ -74,7 +82,10 @@ struct
       | ppty (TyLam (x, k, tb)) = "(\\ t" ^ ppid x ^ " :: " ^ ppknd k ^ ". " ^ ppty tb ^ ")"
     and ppann NONE = ""
       | ppann (SOME t) = " : " ^ ppty t
-    and ppexp (Fn (i,e,t)) = "(fn v" ^ ppid i ^ " => " ^ ppexp e ^ ")" ^ ppann t
+    and ppexp (Fn (Expl (x, ot),e,t)) = "(fn v" ^ ppid x ^ ppann ot ^
+					" => " ^ ppexp e ^ ")" ^ ppann t
+      | ppexp (Fn (Impl (x, tx), e, t)) = "(fn {v" ^ ppid x ^ ppann (SOME tx) ^
+					  "} => " ^ ppexp e ^ ")" ^ ppann t
       | ppexp (Var (i,t)) = "v" ^ ppid i ^ ppann t
       | ppexp (App (e1,e2,t)) = ppexp e1 ^ " " ^ ppexp e2 ^ ppann t
       | ppexp (Ann (e,t)) = "(" ^ ppexp e ^ " : " ^ ppty t ^ ")"
@@ -83,6 +94,7 @@ struct
             String.concatWith "\n   " (map ppdec l) ^
         "\nin\n   " ^ ppexp e ^ "\nend"
       | ppexp (Literal t) = "#" ^ ppty t
+      | ppexp (LongName (e, x, t)) = "(" ^ ppexp e ^ ").v" ^ ppid x ^ ppann t
     and ppdec (ValBind (i,t,e)) = "val v" ^ ppid i ^ ppann t ^ " = " ^ ppexp e
       | ppdec (ValRecBind (i,t,e)) = 
             "val rec v" ^ ppid i ^ ppann t ^ " = " ^ ppexp e
@@ -97,7 +109,7 @@ struct
         "structure s" ^ ppid i ^ ppann t ^ " = " ^ ppdec d
       | ppdec (SigDec (i, ps, t)) =
         "signature S" ^ ppid i ^
-	String.concatWith " " (map (fn (x, k) => "(t" ^ ppid x ^ " :: " ^ ppknd k ^ ")") ps) ^
+	foldO (fn (x, k) => " (t" ^ ppid x ^ " :: " ^ ppknd k ^ ")") "" ps ^
 	" = " ^ ppty t
 
 end
