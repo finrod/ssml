@@ -1,3 +1,140 @@
+structure TyEval =
+struct
+    structure A = Ast
+
+    val tyvarCounter = ref 0
+    fun freshTy () = 
+        A.TyVar (!tyvarCounter) before tyvarCounter := (!tyvarCounter) + 1
+
+    datatype cdecl   = TDef of A.knd * A.ty | TDec of A.knd | VDec of A.ty
+    datatype closure = CPair of cdecl * (A.id * closure) list
+    type environment = (A.id * closure) list
+
+    fun lookup (x : Ast.id) (env : environment) =
+	(case List.find (fn (y, _) => x = y) env of
+	     SOME (_, t) => t
+	   | NONE => raise Fail ("Undeclared identifier " ^ Ast.ppid x))
+
+    (* Kinding of types. Req's an environment mapping tyids to kinds and possibly definitions *)
+    fun infKnd E (A.TyId x) =
+	(case lookup x E of
+	     CPair (TDef (k, _), _) => k
+	   | CPair (TDec k, _) => k
+	   | _ => raise Fail ("Identifier is not a type"))
+      | infKnd _ (A.TyVar x) = A.KTy
+      | infKnd _ (A.TyPoly x) = A.KTy
+      | infKnd E (t as A.TyApp (t1, t2)) =
+	let val f = Fail ("Kind mismatch at type expression " ^ A.ppty t)
+	in (case infKnd E t1 of
+		A.KArr (k1, k2) => if infKnd E t2 = k1 then k2 else raise f
+	      | _ => raise f)
+	end
+      | infKnd E (A.TySig ds) = (chckSigKnd E ds; A.KSig)
+      | infKnd E (t as A.TyArrow (t1, t2)) =
+	(case (infKnd E t1, infKnd E t2) of
+	     (A.KSig, A.KTy) => A.KTy
+	   | (A.KTy, A.KTy) => A.KTy
+	   | (A.KSig, A.KSig) => A.KSig
+	   (* kind of types of functors (if I get things right, that is) *)
+	   | _ => raise Fail ("First-class modules or some weird miskinding in " ^ A.ppty t))
+      | infKnd E (A.TyLam (x, k, t)) =
+	let val kb = infKnd ((x, CPair (TDec k, E)) :: E) t
+	in A.KArr (k, kb) end
+      | infKnd E (A.TyLongName (xs, x)) =
+	let fun aux (x, E) = (case lookup x E of
+			       CPair (VDec (A.TySig ds), E') => chckSigKnd E' ds (* inefficient *)
+			     | _ => raise Fail "Not structure declaration")
+	    val E' = List.foldl aux E xs
+	in case lookup x E' of
+	       CPair (TDec k, _) => k
+	     | CPair (TDef (k, _), _) => k
+	     | _ => raise Fail "Not a type declaration"
+	end
+    and chckSigKnd E [] = E
+      | chckSigKnd E (d :: ds) =
+	(case d of
+	     A.TyDef (x, t, ok) =>
+	     let val k  = infKnd E t
+		 val k' = A.foldO (fn x => if (x = k) then x else raise Fail ("Kind mismatch")) k ok
+	     in chckSigKnd ((x, CPair (TDef (k', t), E)) :: E) ds
+	     end
+	   | A.TyDec (x, k) => chckSigKnd ((x, CPair (TDec k, E)) :: E) ds
+	   | A.ValDec (x, t) => let val k = infKnd E t
+				in if k = A.KTy orelse k = A.KSig
+				   then chckSigKnd ((x, CPair (VDec t, E)) :: E) ds
+				   else raise Fail "Not ground type for value"
+				end
+	   | _ => raise Fail ("Impossible"))
+
+    fun eval E (t as A.TyId x) =
+	(case lookup x E of
+	     CPair (TDef (_, t'), E') => eval E' t'
+	   | CPair (TDec _, E') => (t, E')
+	   | _ => raise Fail ("Identifier is not a type"))
+      | eval E (t as A.TyApp (t1, t2)) =
+	(case eval E t1 of
+	     (A.TyLam (x, k, t'), E') => let val (t'', E'') = eval E t2
+					 in (t', (x, CPair (TDef (k, t''), E'')) :: E')
+					 end
+	   | _ => (t, E))
+      | eval E t = (t, E)
+
+    fun tyEq (t1, E1) (t2, E2) =
+	(case (eval E1 t1, eval E2 t2) of
+	     ((A.TyId x, _), (A.TyId y, _)) => x = y
+	   | ((A.TyVar x, _), (A.TyVar y, _)) => x = y
+	   | ((A.TyApp (t11, t12), E1), (A.TyApp (t21, t22), E2)) =>
+	     tyEq (t11, E1) (t21, E2) andalso tyEq (t12, E1) (t22, E2)
+	   | ((A.TyLam (x, k, t1), E1), (A.TyLam (y, k', t2), E2)) =>
+	     let val v = freshTy ()
+	     in k = k' andalso
+		tyEq (t1, (x, CPair (TDef (k, v), E1)) :: E1) (t2, (y, CPair (TDef (k, v), E2)) :: E2)
+	     end
+	   | ((A.TyArrow (t11, t12), E1), (A.TyArrow (t21, t22), E2)) =>
+	     tyEq (t11, E1) (t21, E2) andalso tyEq (t12, E1) (t22, E2)
+	   | ((A.TyLongName ([], x), E1), (A.TyLongName ([], y), E2)) =>
+	     tyEq (A.TyId x, E1) (A.TyId y, E2)
+	   | ((A.TyLongName (x::xs, t), E1), (A.TyLongName (y::ys, u), E2)) =>
+	     (case (lookup x E1, lookup y E2) of
+		  (CPair (VDec (tl as A.TySig dl), E1'), CPair (VDec (tr as A.TySig dr), E2')) =>
+		  tyEq (tl, E1') (tr, E2') andalso tyEq (A.TyLongName (xs, t), chckSigKnd E1' dl)
+							(A.TyLongName (ys, u), chckSigKnd E2' dr)
+		| _ => raise Fail "Ill kinded longname types or some shit")
+	   | ((A.TySig ds, E1), (A.TySig es, E2)) => sigImpl (ds, E1) (es, E2)
+	   | _ => raise Fail ("Types " ^ A.ppty t1 ^ " and " ^ A.ppty t2 ^ " not equal"))
+
+    and sigImpl ([], E) _ = true
+      | sigImpl (d :: ds, E) (es, F) =
+	let fun evalUntil x [] F = NONE
+	      | evalUntil x (A.TyDef (y, t, SOME k) :: es) F =
+		if x = y then SOME (TDef (k, t), F)
+		else evalUntil x es ((y, CPair (TDef (k, t), F)) :: F)
+	      | evalUntil x (A.TyDec (y, k) :: es) F =
+		if x = y then SOME (TDec k, F) else evalUntil x es ((y, CPair (TDec k, F)) :: F)
+	      | evalUntil x (A.ValDec (y, t) :: es) F =
+		if x = y then SOME (VDec t, F) else evalUntil x es ((y, CPair (VDec t, F)) :: F)
+	      | evalUntil x es F = raise Fail "Not kinded defs"
+	in case d of
+	       A.TyDef (x, t1, ok) =>
+	       (case evalUntil x es F of
+		    SOME (TDef (k, t2), F') => tyEq (t1, E) (t2, F') andalso
+					       sigImpl (ds, (x, CPair (TDef (k, t1), E)) :: E) (es, F)
+		  | _ => false)
+	     | A.TyDec (x, k) =>
+	       (case evalUntil x es F of
+		    SOME (TDec k', F') => sigImpl (ds, (x, CPair (TDec k, E)) :: E) (es, F)
+		  | SOME (cl as (TDef (k', t), F')) => sigImpl (ds, (x, CPair cl) :: E) (es, F)
+		  | _ => false)
+	     | A.ValDec (x, t1) =>
+	       (case evalUntil x es F of
+		    SOME (VDec t2, F') => tyEq (t1, E) (t2, F') andalso
+					  sigImpl (ds, (x, CPair (VDec t1, E)) :: E) (es, F)
+		  | _ => false)
+	     | _ => raise Fail "Impossible"
+	end
+
+end
+(*
 structure HM =
 struct
     structure A = Ast
@@ -8,34 +145,10 @@ struct
 
     structure UF = IUnionFind
 
-    (* Kinding of types. Req's an environment mapping tyids to kinds and possibly definitions *)
-    fun infKnd D (A.TyId x) =
-	(case List.find (fn (y, _, _) => x = y) D of
-	     SOME (_, k, _) => k
-	   | NONE => raise Fail ("Undefined type identifier t" ^ A.ppid x))
-      | infKnd D (A.TyVar x) = A.KTy
-      | infKnd D (A.TyPoly x) = A.KTy
-      | infKnd D (t as A.TyApp (t1, t2)) =
-	let val f = Fail ("Kind mismatch at type expression " ^ A.ppty t)
-	in (case infKnd D t1 of
-		A.KArr (k1, k2) => if infKnd D t2 = k1 then k2 else raise f
-	      | _ => raise f)
-	end
-      | infKnd D (A.TySig ds) = A.KSig before chckSigKnd D ds
-      | infKnd D (t as A.TyArrow (t1, t2)) =
-	(case (infKnd D t1, infKnd D t2) of
-	     (A.KSig, A.KTy) => A.KTy
-	   | (A.KTy, A.KTy) => A.KTy
-	   | (A.KSig, A.KSig) => A.KSig (* kind of types of functors (if I get it right, that is) *)
-	   | _ => raise Fail ("Higher-order modules or some weird miskinding in " ^ A.ppty t))
-      | infKnd D (A.TyLam (x, k, t)) =
-	let val kb = infKnd ((x, k, NONE) :: D) t
-	in (A.KArr (k, kb)) end
-
-    and chckSigKnd D [] = ()
-      | chckSigKnd D (A.TyDef (x, t) :: ds) =
+(*    and chckSigKnd D [] = ()
+      | chckSigKnd D (A.TyDef (x, t, NONE) :: ds) =
 	let val k = infKnd D t
-	in chckSigKnd ((x, k, SOME t) :: D) ds
+	in A.TyDef (x, t, SOME k) :: chckSigKnd ((x, k, SOME t) :: D) ds
 	end
       | chckSigKnd D (A.TyDec (x, k) :: ds) =
 	chckSigKnd ((x, k, NONE) :: D) ds
@@ -43,7 +156,7 @@ struct
 	if infKnd D t = A.KTy then chckSigKnd D ds
 	else raise Fail ("Ill-kinded value declaration: " ^ A.ppdec d)
       | chckSigKnd D (d :: ds) =
-	raise Fail ("Illegal construct in signature type: " ^ A.ppdec d)
+	raise Fail ("Illegal construct in signature type: " ^ A.ppdec d)*)
 
     val tysets : (A.id * (A.ty UF.set)) list ref = ref []
 
@@ -117,6 +230,21 @@ struct
 	end
       | instantiate _ t = t
 
+    fun getType (A.ValBind (_, SOME t, _)) = t
+      | getType (A.ValRecBind (_, SOME t, _)) = t
+      | getType (A.ValDec (_, t)) = t
+      | getType (A.Struct (_, SOME t)) = t
+      | getType (A.StructDec (_, _, SOME t)) = t
+      | getType _ = raise Fail "Blah"
+
+(*    fun solveSigTypes D G (A.TySig ds) (A.TySig ds') =
+	let fun locate D G x [] = raise Fail "Blah"
+	      | locate D G x ((d as ValBind (y, _)) :: ds) = if x = y then d else 
+	    fun aux D G [] = ()
+	      | aux D G (d : ds) =
+	in aux D G ds ds'
+	end*)
+
     fun tyinfExp D G (A.Fn (a, e, NONE)) =
 	let val (t, i) = (case a of
 			      A.Expl (i, NONE) => (freshTy (), i)
@@ -168,20 +296,23 @@ struct
 	    val t'' = mkPoly k (force t')
 	in (D, (i, t'') :: G, A.ValRecBind (i, SOME t'', e'))
 	end
-      (* Code a slightly duplicated between here and kinding of signature types *)
+      (* Code slightly duplicated between here and kinding of signature types *)
       | tyinfDec D G (d as A.TyDec (x, k)) = ((x, k, NONE) :: D, G, d)
-      | tyinfDec D G (d as A.TyDef (x, t)) =
+      | tyinfDec D G (d as A.TyDef (x, t, NONE)) =
 	let val k = infKnd D t
 	in ((x, k, SOME t) :: D, G, d)
 	end
       | tyinfDec D G (d as A.ValDec (x, t)) =
 	let val k = infKnd D t
-	in if k = A.KTy then (D, (x, t) :: G, d)
+	in if k = A.KTy orelse k = A.KSig then (D, (x, t) :: G, d)
 	   else raise Fail ("Ill kinded value declaration " ^ A.ppdec d)
 	end
-      | tyinfDec D G (d as A.SigDec (x, ps, t as A.TySig ds)) =
-	let val nt = A.foldO (fn (x, k) => A.TyLam (x, k, t)) t ps
-	    val k = infKnd D nt
+      | tyinfDec D G (d as A.SigDec (x, ps, A.TySig ds)) =
+	let val Dt = A.foldO (fn (x, k) => (x, k, NONE) :: D) D ps
+	    val (_, _, nds) = tyinfDecList Dt G ds
+	    val nt = A.foldO (fn (x, k) => A.TyLam (x, k, A.TySig nds))
+			     (A.TySig nds) ps
+	    val k  = infKnd D nt
 	in ((x, k, SOME nt) :: D, G, d)
 	end
       | tyinfDec D G (d as A.Struct (ds, NONE)) =
@@ -189,9 +320,21 @@ struct
 	in (D, G, A.Struct (ds', SOME (A.TySig ds')))
 	end
 	(* TODO: get the proper signature type from the definitions *)
-(*      | tyinfDec D G (d as A.StructDec (x, d, ot)) =
+      | tyinfDec D G (A.StructDec (x, d, NONE)) =
 	let val (D', G', d') = tyinfDec D G d
-	    val k = infKnd D' (getType d')*)
+	    val t = getType d'
+	    val k = infKnd D' t
+	in if k = A.KSig then (D, (x, t) :: G, A.StructDec (x, d', SOME t))
+	   else raise Fail "Blah"
+	end
+      | tyinfDec D G (A.StructDec (x, d, SOME t)) =
+	let val (D', G', d') = tyinfDec D G d
+	    val t' = getType d'
+	    val k  = infKnd D' t'
+	    val _  = if k = A.KSig then () else raise Fail "Blah"
+	    (*val _  = solveSigTypes D G t t'*)
+	in (D, (x, t) :: G, A.StructDec (x, d', SOME t))
+	end
       | tyinfDec D G d =
 	raise Fail ("Unhandled declaration in tyinfDec: " ^ A.ppdec d)
 
@@ -202,3 +345,4 @@ struct
 
  end
 
+*)
