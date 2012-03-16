@@ -79,33 +79,37 @@ struct
 	   | _ => (t, E))
       | eval E t = (t, E)
 
-    (* Warning: polymorphism not implemented *)
-    fun tyImp (t1, E1) (t2, E2) =
+    fun tyImp PM (t1, E1) (t2, E2) =
 	(case (eval E1 t1, eval E2 t2) of
 	     ((A.TyId x, _), (A.TyId y, _)) => x = y
 	   | ((A.TyVar x, _), (A.TyVar y, _)) => x = y
 	   | ((A.TyApp (t11, t12), E1), (A.TyApp (t21, t22), E2)) =>
-	     tyImp (t11, E1) (t21, E2) andalso tyImp (t12, E1) (t22, E2)
+	     tyImp PM (t11, E1) (t21, E2) andalso tyImp PM (t12, E1) (t22, E2)
 	   | ((A.TyLam (x, k, t1), E1), (A.TyLam (y, k', t2), E2)) =>
 	     let val v = freshTy ()
 	     in k = k' andalso
-		tyImp (t1, (x, CPair (TDef (k, v), E1)) :: E1) (t2, (y, CPair (TDef (k, v), E2)) :: E2)
+		tyImp PM (t1, (x, CPair (TDef (k, v), E1)) :: E1)
+		      (t2, (y, CPair (TDef (k, v), E2)) :: E2)
 	     end
 	   | ((A.TyArrow (t11, t12), E1), (A.TyArrow (t21, t22), E2)) =>
-	     tyImp (t11, E1) (t21, E2) andalso tyImp (t12, E1) (t22, E2)
+	     tyImp PM (t11, E1) (t21, E2) andalso tyImp PM (t12, E1) (t22, E2)
 	   | ((A.TyLongName ([], x), E1), (A.TyLongName ([], y), E2)) =>
-	     tyImp (A.TyId x, E1) (A.TyId y, E2)
+	     tyImp PM (A.TyId x, E1) (A.TyId y, E2)
 	   | ((A.TyLongName (x::xs, t), E1), (A.TyLongName (y::ys, u), E2)) =>
 	     (case (lookup x E1, lookup y E2) of
 		  (CPair (VDec (tl as A.TySig dl), E1'), CPair (VDec (tr as A.TySig dr), E2')) =>
-		  tyImp (tl, E1') (tr, E2') andalso tyImp (A.TyLongName (xs, t), chckSigKnd E1' dl)
-							  (A.TyLongName (ys, u), chckSigKnd E2' dr)
+		  tyImp PM (tl, E1') (tr, E2') andalso
+		  tyImp PM (A.TyLongName (xs, t), chckSigKnd E1' dl) 
+			(A.TyLongName (ys, u), chckSigKnd E2' dr)
 		| _ => raise Fail "Ill kinded longname types or some shit")
-	   | ((A.TySig ds, E1), (A.TySig es, E2)) => sigImpl (ds, E1) (es, E2)
+	   | ((A.TySig ds, E1), (A.TySig es, E2)) => sigImpl PM (ds, E1) (es, E2)
+	   | (c, (A.TyPoly x, _)) => (case List.find (fn (y, _) => x = y) (!PM) of
+					  SOME (_, c') => tyImp PM c c'
+					| NONE => true before (PM := (x, c) :: (!PM)))
 	   | _ => raise Fail ("Types " ^ A.ppty t1 ^ " and " ^ A.ppty t2 ^ " not equal"))
 
-    and sigImpl ([], E) _ = true
-      | sigImpl (d :: ds, E) (es, F) =
+    and sigImpl _ ([], E) _ = true
+      | sigImpl PM (d :: ds, E) (es, F) =
 	let fun evalUntil x [] F = NONE
 	      | evalUntil x (A.TyDef (y, t, SOME k) :: es) F =
 		if x = y then SOME (TDef (k, t), F)
@@ -118,21 +122,24 @@ struct
 	in case d of
 	       A.TyDef (x, t1, ok) =>
 	       (case evalUntil x es F of
-		    SOME (TDef (k, t2), F') => tyImp (t1, E) (t2, F') andalso
-					       sigImpl (ds, (x, CPair (TDef (k, t1), E)) :: E) (es, F)
+		    SOME (TDef (k, t2), F') =>
+		    tyImp PM (t1, E) (t2, F') andalso
+		    sigImpl PM (ds, (x, CPair (TDef (k, t1), E)) :: E) (es, F)
 		  | _ => false)
 	     | A.TyDec (x, k) =>
 	       (case evalUntil x es F of
-		    SOME (TDec k', F') => sigImpl (ds, (x, CPair (TDec k, E)) :: E) (es, F)
-		  | SOME (cl as (TDef (k', t), F')) => sigImpl (ds, (x, CPair cl) :: E) (es, F)
+		    SOME (TDec k', F') => sigImpl PM (ds, (x, CPair (TDec k, E)) :: E) (es, F)
+		  | SOME (cl as (TDef (k', t), F')) => sigImpl PM (ds, (x, CPair cl) :: E) (es, F)
 		  | _ => false)
 	     | A.ValDec (x, t1) =>
 	       (case evalUntil x es F of
-		    SOME (VDec t2, F') => tyImp (t1, E) (t2, F') andalso
-					  sigImpl (ds, (x, CPair (VDec t1, E)) :: E) (es, F)
+		    SOME (VDec t2, F') => tyImp PM (t1, E) (t2, F') andalso
+					  sigImpl PM (ds, (x, CPair (VDec t1, E)) :: E) (es, F)
 		  | _ => false)
 	     | _ => raise Fail "Impossible"
 	end
+
+    fun subt t1 t2 env = tyImp (ref []) (t1, env) (t2, env)
 
 end
 
@@ -176,7 +183,7 @@ struct
     fun pickCanon _ (A.TyVar _, t) = t
       | pickCanon _ (t, A.TyVar _) = t
       | pickCanon D (t1, t2) =
-	if T.tyImp (t1, D) (t2, D) then t1
+	if T.subt t1 t2 D then t1
 	else raise Fail ("Non-substitution union called on " ^ A.ppty t1 ^ " and " ^ A.ppty t2)
 
     fun solve D (A.TyVar x, A.TyVar y) =
@@ -215,7 +222,11 @@ struct
 	    val t2' = instantiate P (force t2)
 	in A.TyArrow (t1', t2')
 	end
+      | instantiate P (A.TyLam (x, k, t)) = A.TyLam (x, k, instantiate P (force t))
+      | instantiate P (A.TySig ds) = A.TySig (List.map (dinst P) ds)
       | instantiate _ t = t
+    and dinst P (A.ValDec (x, t)) = A.ValDec (x, instantiate P t)
+      | dinst _ d = d
 
     fun getType (A.ValBind (_, SOME t, _)) = t
       | getType (A.ValRecBind (_, SOME t, _)) = t
@@ -276,26 +287,26 @@ struct
 	    val t'' = mkPoly k (force t')
 	in ((i, T.CPair (T.VDec t'', env)) :: env, A.ValRecBind (i, SOME t'', e'))
 	end
-(*      (* Code slightly duplicated between here and kinding of signature types *)
-      | tyinfDec D G (d as A.TyDec (x, k)) = ((x, k, NONE) :: D, G, d)
-      | tyinfDec D G (d as A.TyDef (x, t, NONE)) =
-	let val k = T.infKnd D t
-	in ((x, k, SOME t) :: D, G, d)
+      (* Code slightly duplicated between here and kinding of signature types *)
+      | tyinfDec env (d as A.TyDec (x, k)) = ((x, T.CPair (T.TDec k, env)) :: env, d)
+      | tyinfDec env (d as A.TyDef (x, t, NONE)) =
+	let val k = T.infKnd env t
+	in ((x, T.CPair (T.TDef (k, t), env)) :: env, A.TyDef (x, t, SOME k))
 	end
-      | tyinfDec D G (d as A.ValDec (x, t)) =
-	let val k = T.infKnd D t
-	in if k = A.KTy orelse k = A.KSig then (D, (x, t) :: G, d)
+      | tyinfDec env (d as A.ValDec (x, t)) =
+	let val k = T.infKnd env t
+	in if k = A.KTy orelse k = A.KSig then ((x, T.CPair (T.VDec t, env)) :: env, d)
 	   else raise Fail ("Ill kinded value declaration " ^ A.ppdec d)
 	end
-      | tyinfDec D G (d as A.SigDec (x, ps, A.TySig ds)) =
-	let val Dt = A.foldO (fn (x, k) => (x, k, NONE) :: D) D ps
-	    val (_, _, nds) = tyinfDecList Dt G ds
-	    val nt = A.foldO (fn (x, k) => A.TyLam (x, k, A.TySig nds))
-			     (A.TySig nds) ps
-	    val k  = T.infKnd D nt
-	in ((x, k, SOME nt) :: D, G, d)
+      | tyinfDec env (d as A.SigDec (x, ps, A.TySig ds)) =
+	let val env' = A.foldO (fn (x, k) => (x, T.CPair (T.TDec k, env)) :: env) env ps
+	    val (_, ds') = tyinfDecList env' ds
+	    val nt = A.foldO (fn (x, k) => A.TyLam (x, k, A.TySig ds'))
+			     (A.TySig ds') ps
+	    val k  = T.infKnd env nt
+	in ((x, T.CPair (T.TDef (k, nt), env)) :: env, A.SigDec (x, ps, A.TySig ds'))
 	end
-      | tyinfDec D G (d as A.Struct (ds, NONE)) =
+(*      | tyinfDec D G (d as A.Struct (ds, NONE)) =
 	let val (D', G', ds') = tyinfDecList D G ds
 	in (D, G, A.Struct (ds', SOME (A.TySig ds')))
 	end
