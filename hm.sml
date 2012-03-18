@@ -306,28 +306,36 @@ struct
 	    val k  = T.infKnd env nt
 	in ((x, T.CPair (T.TDef (k, nt), env)) :: env, A.SigDec (x, ps, A.TySig ds'))
 	end
-(*      | tyinfDec D G (d as A.Struct (ds, NONE)) =
-	let val (D', G', ds') = tyinfDecList D G ds
-	in (D, G, A.Struct (ds', SOME (A.TySig ds')))
+      | tyinfDec env (d as A.Struct (ds, NONE)) =
+	let val (env', ds') = tyinfDecList env ds
+	    fun toDecl (A.ValBind (x, SOME t, _)) = A.ValDec (x, t)
+	      | toDecl (A.ValRecBind (x, SOME t, _)) = A.ValDec (x, t)
+	      | toDecl (A.StructDec (x, d, SOME t)) = A.ValDec (x, t)
+	      | toDecl (A.SigDec (x, SOME (y, k), t)) =
+		A.TyDef (x, A.TyLam (y, k, t), SOME (A.KArr (k, A.KSig)))
+	      | toDecl (A.SigDec (x, NONE, t)) = A.TyDef (x, t, SOME A.KSig)
+	      | toDecl d = d
+	    val decls = List.map toDecl ds'
+	in (env, A.Struct (ds', SOME (A.TySig decls)))
 	end
 	(* TODO: get the proper signature type from the definitions *)
-      | tyinfDec D G (A.StructDec (x, d, NONE)) =
-	let val (D', G', d') = tyinfDec D G d
+      | tyinfDec env (A.StructDec (x, d, NONE)) =
+	let val (env', d') = tyinfDec env d
 	    val t = getType d'
-	    val k = T.infKnd D' t
-	in if k = A.KSig then (D, (x, t) :: G, A.StructDec (x, d', SOME t))
+	    val k = T.infKnd env' t
+	in if k = A.KSig then ((x, T.CPair (T.VDec t, env')) :: env, A.StructDec (x, d', SOME t))
 	   else raise Fail "Blah"
 	end
-      | tyinfDec D G (A.StructDec (x, d, SOME t)) =
-	let val (D', G', d') = tyinfDec D G d
+      | tyinfDec env (A.StructDec (x, d, SOME t)) =
+	let val (env', d') = tyinfDec env d
 	    val t' = getType d'
-	    val k  = T.infKnd D' t'
+	    val k  = T.infKnd env' t'
 	    val _  = if k = A.KSig then () else raise Fail "Blah"
-	    (*val _  = solveSigTypes D G t t'*)
-	in (D, (x, t) :: G, A.StructDec (x, d', SOME t))
+	in if T.subt t t' env then ((x, T.CPair (T.VDec t, env')) :: env, A.StructDec (x, d', SOME t))
+	   else raise Fail ("Type mismatch")
 	end
-      | tyinfDec D G d =
-	raise Fail ("Unhandled declaration in tyinfDec: " ^ A.ppdec d)*)
+      | tyinfDec env d =
+	raise Fail ("Unhandled declaration in tyinfDec: " ^ A.ppdec d)
 
     and tyinfDecList env ds =
 	List.foldl (fn (d, (env, ds)) =>
