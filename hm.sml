@@ -270,6 +270,16 @@ struct
 	in (t, e')
 	end
       | tyinfExp env (e as A.Literal t) = (t, e)
+      | tyinfExp env (e as A.LongName (xs, x, NONE)) =
+	let fun step (x, env) = (case T.lookup x env of
+				     T.CPair (T.VDec (A.TySig ds), env') => T.chckSigKnd env' ds
+				   | _ => raise Fail "Path not build of structures")
+	    val env' = List.foldl step env xs
+	in case T.lookup x env' of
+	       (* TODO: type scopes should be determined for t below *)
+	       T.CPair (T.VDec t, env'') => (t, A.LongName (xs, x, SOME t))
+	     | _ => raise Fail "Not a value"
+	end
       | tyinfExp env e =
         raise (Fail ("Unhandled expression in tyinfExp: " ^ A.ppexp e))
 
@@ -318,7 +328,6 @@ struct
 	    val decls = List.map toDecl ds'
 	in (env, A.Struct (ds', SOME (A.TySig decls)))
 	end
-	(* TODO: get the proper signature type from the definitions *)
       | tyinfDec env (A.StructDec (x, d, NONE)) =
 	let val (env', d') = tyinfDec env d
 	    val t = getType d'
