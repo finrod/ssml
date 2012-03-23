@@ -1,7 +1,9 @@
 Group is
 	$SMACKAGE/cmlib/v1/cmlib.cm
+	$SMACKAGE/parcom/v1/parcom.cm
 	examples.sml
 	hm.sml
 	symtab.sml
 	ast.sml
+	parser.sml
 
