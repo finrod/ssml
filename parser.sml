@@ -37,20 +37,16 @@ struct
     | iolSplit [s] = ([], s)
     | iolSplit (s :: ss) = let val (fs, n) = iolSplit ss in (s :: fs, n) end
 
-  fun tyOfIol [s] = Ast.TyId 0
+  fun tyOfIol [s] = Ast.TyId s
     | tyOfIol ss  =
-      let fun enum _ [] = []
-	    | enum k (_ :: xs) = k :: enum (k+1) xs
-	  val (ss, f) = iolSplit ss
-      in Ast.TyLongName (enum 1 ss, 0)
+      let val (ss, f) = iolSplit ss
+      in Ast.TyLongName (ss, f)
       end
 
-  fun expOfIol [s] = Ast.Var (0, NONE)
+  fun expOfIol [s] = Ast.Var (s, NONE)
     | expOfIol ss  =
-      let fun enum _ [] = []
-	    | enum k (_ :: xs) = k :: enum (k+1) xs
-	  val (ss, f) = iolSplit ss
-      in Ast.LongName (enum 1 ss, 0, NONE)
+      let val (ss, f) = iolSplit ss
+      in Ast.LongName (ss, f, NONE)
       end
 
   (* kind annotations *)
@@ -61,7 +57,7 @@ struct
 
   (* types *)
   val tyIdorLN = idOrLongName wth tyOfIol
-  val poly = CharParser.char #"'" >> ident return Ast.TyPoly 0
+  val poly = CharParser.char #"'" >> ident wth Ast.TyPoly
 
   fun arTy () = chainr1 ($apTy) (TP.reservedOp "->" return Ast.TyArrow)
   and apTy () = chainl1 ($atTy) (succeed Ast.TyApp)
@@ -72,35 +68,35 @@ struct
   (* function arguments *)
   val tyann = TP.reservedOp ":" >> typeP
 
-  val args = TP.braces ((ident return 0) && tyann) wth Ast.Impl
-         <|> TP.parens ((ident return 0) && opt tyann) wth Ast.Expl
-	 <|> ident return Ast.Expl (0, NONE)
+  val args = TP.braces (ident && tyann) wth Ast.Impl
+         <|> TP.parens (ident && opt tyann) wth Ast.Expl
+	 <|> ident wth (fn x => Ast.Expl (x, NONE))
 
   (* declarations (what goes inside a sig) *)
-  val dec = TP.reserved "val"  >> (ident return 0) && tyann wth Ast.ValDec
+  val dec = TP.reserved "val"  >> ident && tyann wth Ast.DValDec
 	<|> TP.reserved "type" >> ident &&
 	    (TP.reservedOp ":" >> kind wth Sum.INL <|> TP.reservedOp "=" >> typeP wth Sum.INR)
-	    wth (fn (i, Sum.INL k) => Ast.TyDec (0, k)
-		  | (i, Sum.INR t) => Ast.TyDef (0, t, NONE))
+	    wth (fn (i, Sum.INL k) => Ast.DTyDec (i, k)
+		  | (i, Sum.INR t) => Ast.DTyDef (i, t, NONE))
 	 ?? "declaration"
 
   fun tdef () = TP.reserved "val" >> (opt (TP.reserved "rec") wth Option.isSome) &&
 	        ident && TP.reservedOp "=" >> $bExp
-		wth (fn (true,  (i, e)) => Ast.ValRecBind (0, NONE, e)
-		      | (false, (i, e)) => Ast.ValBind (0, NONE, e))
+		wth (fn (true,  (i, e)) => Ast.ValRecBind (i, NONE, e)
+		      | (false, (i, e)) => Ast.ValBind (i, NONE, e))
 	    <|> TP.reserved "struct" >> repeat1 ($tdef) << TP.reserved "end"
 	        wth (fn ds => Ast.Struct (ds, NONE))
 	    <|> TP.reserved "structure" >> ident && opt tyann && TP.reservedOp "=" >> $tdef
-		wth (fn (i, (ot, d)) => Ast.StructDec (0, d, ot))
+		wth (fn (i, (ot, d)) => Ast.StructDec (i, d, ot))
 	    <|> TP.reserved "type" >> ident && TP.reservedOp "=" >> typeP
-		wth (fn (i, t) => Ast.TyDef (0, t, NONE))
+		wth (fn (i, t) => Ast.TyDef (i, t, NONE))
 	    <|> TP.reserved "fun" >> ident && repeat1 args && TP.reservedOp "=" >> $bExp
 		wth (fn (i, (ars, e)) =>
-			Ast.ValRecBind (0, NONE, List.foldr (fn (a, e) => Ast.Fn (a, e, NONE)) e ars))
+			Ast.ValRecBind (i, NONE, List.foldr (fn (a, e) => Ast.Fn (a, e, NONE)) e ars))
 	    <|> TP.reserved "signature" >> ident && opt (TP.parens (ident && TP.reservedOp ":" >> kind))
 		&& TP.reservedOp "=" >> TP.reserved "sig" >> repeat dec << TP.reserved "end"
-		wth (fn (i, (SOME (p, k), ds)) => Ast.SigDec (0, SOME (1, k), Ast.TySig ds)
-		      | (i, (NONE, ds)) => Ast.SigDec (0, NONE, Ast.TySig ds))
+		wth (fn (i, (SOME (p, k), ds)) => Ast.SigDec (i, SOME (p, k), Ast.TySig ds)
+		      | (i, (NONE, ds)) => Ast.SigDec (i, NONE, Ast.TySig ds))
 
   and bExp () = TP.reserved "fn" >> args && TP.reservedOp "=>" >> $bExp
 	        wth (fn (x, y) => Ast.Fn (x, y, NONE))
