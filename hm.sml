@@ -316,7 +316,7 @@ struct
 	end*)
       | tyinfDec env (d as A.SigDec (x, ps, A.TySig ds)) =
 	let val env' = A.foldO (fn (x, k) => (x, T.CPair (T.TDec k, env)) :: env) env ps
-	    val (_, ds') = T.kindSig env ds
+	    val (_, ds') = T.kindSig env' ds
 	    val nt = A.foldO (fn (x, k) => A.TyLam (x, k, A.TySig ds'))
 			     (A.TySig ds') ps
 	    val kt = T.infKnd env nt

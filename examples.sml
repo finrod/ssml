@@ -1,8 +1,5 @@
 structure Examples =
 struct
-    val a = 0
-    val x = 1
-
 
     val Sum.INR example1 = SSParse.parseDef "fun id x = x"
         (*= Ast.ValRecBind (a, NONE, 
@@ -18,13 +15,8 @@ struct
     val Sum.INR example4 = SSParse.parseDef "fun loop x = loop x"
       (*= Ast.ValRecBind (a, NONE, Ast.Fn (Ast.Expl (x, NONE), Ast.App (Ast.Var (a, NONE), Ast.Var (x, NONE), NONE), NONE))*)
 
-    val monad = 2
-    val t = 3
-    val return = 4
-    val bind = 5
-
-(*    val monadDecl
-      = Ast.SigDec (monad, SOME (t, Ast.KArr (Ast.KTy, Ast.KTy)), Ast.TySig
+    val Sum.INR monadDecl = SSParse.parseDef "signature MONAD (m : * -> *) = sig\n  val return : 'a -> m 'a\n  val bind : m 'a -> ('a -> m 'b) -> m 'b\nend"
+    (*  = Ast.SigDec (monad, SOME (t, Ast.KArr (Ast.KTy, Ast.KTy)), Ast.TySig
 				[Ast.ValDec (return, Ast.TyArrow (Ast.TyPoly x, Ast.TyApp (Ast.TyId t, Ast.TyPoly x))),
 				 Ast.ValDec (bind, Ast.TyArrow (Ast.TyApp (Ast.TyId t, Ast.TyPoly a), Ast.TyArrow (Ast.TyArrow (Ast.TyPoly a, Ast.TyApp (Ast.TyId t, Ast.TyPoly x)), Ast.TyApp (Ast.TyId t, Ast.TyPoly x))))])
 
