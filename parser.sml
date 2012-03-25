@@ -120,8 +120,10 @@ struct
 
   val exp = $bExp
   val def = $tdef
+  val deflist = repeat def
 
   val parseExp = CharParser.parseString exp
   val parseDef = CharParser.parseString def
+  val parseDefList = CharParser.parseString deflist
 
 end

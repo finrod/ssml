@@ -15,14 +15,16 @@ struct
     val Sum.INR example4 = SSParse.parseDef "fun loop x = loop x"
       (*= Ast.ValRecBind (a, NONE, Ast.Fn (Ast.Expl (x, NONE), Ast.App (Ast.Var (a, NONE), Ast.Var (x, NONE), NONE), NONE))*)
 
-    val Sum.INR monadDecl = SSParse.parseDef "signature MONAD (m : * -> *) = sig\n  val return : 'a -> m 'a\n  val bind : m 'a -> ('a -> m 'b) -> m 'b\nend"
-    (*  = Ast.SigDec (monad, SOME (t, Ast.KArr (Ast.KTy, Ast.KTy)), Ast.TySig
-				[Ast.ValDec (return, Ast.TyArrow (Ast.TyPoly x, Ast.TyApp (Ast.TyId t, Ast.TyPoly x))),
-				 Ast.ValDec (bind, Ast.TyArrow (Ast.TyApp (Ast.TyId t, Ast.TyPoly a), Ast.TyArrow (Ast.TyArrow (Ast.TyPoly a, Ast.TyApp (Ast.TyId t, Ast.TyPoly x)), Ast.TyApp (Ast.TyId t, Ast.TyPoly x))))])
+    val ldec = ("list", TyEval.CPair (TyEval.TDec (Ast.KArr (Ast.KTy, Ast.KTy)), []))
+    val lconss = [("nil", TyEval.CPair (TyEval.VDec (Ast.TyApp (Ast.TyId "list", Ast.TyPoly 0)), [ldec])),
+		  ("cons", TyEval.CPair (TyEval.VDec (Ast.TyArrow (Ast.TyPoly 0, Ast.TyArrow (Ast.TyApp (Ast.TyId "list", Ast.TyPoly 0), Ast.TyApp (Ast.TyId "list", Ast.TyPoly 0)))), [ldec]))]
+    val lenv = ldec :: lconss
 
-    val monadType = Ast.TyLam (t, Ast.KArr (Ast.KTy, Ast.KTy), Ast.TySig
-				[Ast.ValDec (return, Ast.TyArrow (Ast.TyPoly x, Ast.TyApp (Ast.TyId t, Ast.TyPoly x))),
-				 Ast.ValDec (bind, Ast.TyArrow (Ast.TyApp (Ast.TyId t, Ast.TyPoly a), Ast.TyArrow (Ast.TyArrow (Ast.TyPoly a, Ast.TyApp (Ast.TyId t, Ast.TyPoly x)), Ast.TyApp (Ast.TyId t, Ast.TyPoly x))))])*)
+    val initEnv = ("map", TyEval.CPair (TyEval.VDec (Ast.TyArrow (Ast.TyArrow (Ast.TyPoly 0, Ast.TyPoly 1), Ast.TyArrow (Ast.TyApp (Ast.TyId "list", Ast.TyPoly 0), Ast.TyApp (Ast.TyId "list", Ast.TyPoly 1)))), lenv)) ::
+		  ("concat", TyEval.CPair (TyEval.VDec (Ast.TyArrow (Ast.TyApp (Ast.TyId "list", Ast.TyApp (Ast.TyId "list", Ast.TyPoly 0)), Ast.TyApp (Ast.TyId "list", Ast.TyPoly 0))), lenv)) :: lenv
+
+    (* Monad typeclass definition and instance for the case of lists req's the environment above *)
+    val Sum.INR monadLst = SSParse.parseDefList "signature MONAD (m : * -> *) = sig\n  val return : 'a -> m 'a\n  val bind : m 'a -> ('a -> m 'b) -> m 'b\nend\nstructure ListMonad : MONAD list = struct\n  fun return x = cons x nil\n  fun bind xs f = concat (map f xs)\nend"
 
 (*    fun run' e =
         let

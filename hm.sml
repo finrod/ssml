@@ -74,10 +74,32 @@ struct
 						     else raise Fail "Not ground type for value"
 				 in (E', A.DValDec (x, t') :: ds') end)
 
+    fun plookup xs k = (case List.find (fn (j, _) => j = k) xs of
+			   SOME (_, v) => v
+			 | NONE => raise Fail ("Unbound variable " ^ A.ppty (A.TyVar k)))
+
+    fun instantiate P (A.TyPoly x) =
+	(plookup (!P) x handle _ => let val t = freshTy () in t before P := (x, t) :: !P end)
+      | instantiate P (A.TyApp (t1, t2)) =
+	let val t1' = instantiate P ( t1)
+	    val t2' = instantiate P ( t2)
+	in A.TyApp (t1', t2')
+	end
+      | instantiate P (A.TyArrow (t1, t2)) =
+	let val t1' = instantiate P ( t1)
+	    val t2' = instantiate P ( t2)
+	in A.TyArrow (t1', t2')
+	end
+      | instantiate P (A.TyLam (x, k, t)) = A.TyLam (x, k, instantiate P ( t))
+      | instantiate P (A.TySig ds) = A.TySig (List.map (dinst P) ds)
+      | instantiate _ t = t
+    and dinst P (A.DValDec (x, t)) = A.DValDec (x, instantiate P t)
+      | dinst _ d = d
+
     fun eval E (t as A.TyId x) =
 	(case lookup x E of
 	     CPair (TDef (_, t'), E') => eval E' t'
-	   | CPair (TDec _, E') => (t, E')
+	   | CPair (TDec _, E') => (t, E)
 	   | _ => raise Fail ("Identifier is not a type"))
       | eval E (t as A.TyApp (t1, t2)) =
 	(case eval E t1 of
@@ -141,7 +163,7 @@ struct
 		  | _ => false)
 	     | A.DValDec (x, t1) =>
 	       (case evalUntil x es F of
-		    SOME (VDec t2, F') => tyImp PM (t1, E) (t2, F') andalso
+		    SOME (VDec t2, F') => tyImp PM (instantiate (ref []) t1, E) (t2, F') andalso
 					  sigImpl PM (ds, (x, CPair (VDec t1, E)) :: E) (es, F)
 		  | _ => false)
 	end
@@ -217,24 +239,6 @@ struct
       | mkPoly k (A.TyArrow (t1, t2)) = A.TyArrow (mkPoly k (force t1), mkPoly k (force t2))
       | mkPoly k t = t
 
-    fun instantiate P (A.TyPoly x) =
-	(lookup (!P) x handle _ => let val t = freshTy () in t before P := (x, t) :: !P end)
-      | instantiate P (A.TyApp (t1, t2)) =
-	let val t1' = instantiate P (force t1)
-	    val t2' = instantiate P (force t2)
-	in A.TyApp (t1', t2')
-	end
-      | instantiate P (A.TyArrow (t1, t2)) =
-	let val t1' = instantiate P (force t1)
-	    val t2' = instantiate P (force t2)
-	in A.TyArrow (t1', t2')
-	end
-      | instantiate P (A.TyLam (x, k, t)) = A.TyLam (x, k, instantiate P (force t))
-      | instantiate P (A.TySig ds) = A.TySig (List.map (dinst P) ds)
-      | instantiate _ t = t
-    and dinst P (A.DValDec (x, t)) = A.DValDec (x, instantiate P t)
-      | dinst _ d = d
-
     fun getType (A.ValBind (_, SOME t, _)) = t
       | getType (A.ValRecBind (_, SOME t, _)) = t
       | getType (A.Struct (_, SOME t)) = t
@@ -262,7 +266,7 @@ struct
 	end
       | tyinfExp env (A.Var (x, NONE)) =
 	let val (T.CPair (T.VDec t, _)) = T.lookup x env
-	    val t' = instantiate (ref []) t
+	    val t' = T.instantiate (ref []) (forceAll t)
 	in (t', A.Var (x, SOME t'))
 	end
       | tyinfExp env (A.Let (ds, e, NONE)) =
@@ -304,16 +308,10 @@ struct
 	in ((i, T.CPair (T.VDec t'', env)) :: env, A.ValRecBind (i, SOME t'', e'))
 	end
       (* Code slightly duplicated between here and kinding of signature types *)
-      (*| tyinfDec env (d as A.TyDec (x, k)) = ((x, T.CPair (T.TDec k, env)) :: env, d)*)
       | tyinfDec env (d as A.TyDef (x, t, NONE)) =
 	let val kt as (k, t') = T.infKnd env t
 	in ((x, T.CPair (T.TDef kt, env)) :: env, A.TyDef (x, t', SOME k))
 	end
-      (*| tyinfDec env (d as A.ValDec (x, t)) =
-	let val k = T.infKnd env t
-	in if k = A.KTy orelse k = A.KSig then ((x, T.CPair (T.VDec t, env)) :: env, d)
-	   else raise Fail ("Ill kinded value declaration " ^ A.ppdec d)
-	end*)
       | tyinfDec env (d as A.SigDec (x, ps, A.TySig ds)) =
 	let val env' = A.foldO (fn (x, k) => (x, T.CPair (T.TDec k, env)) :: env) env ps
 	    val (_, ds') = T.kindSig env' ds
