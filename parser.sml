@@ -12,6 +12,7 @@ struct
 
   structure LD = MLStyle (Reserved)
   structure TP = TokenParser (LD)
+  open Sum
 
   open ParserCombinators
   open CharParser
@@ -20,6 +21,15 @@ struct
   infix  2 -- ##
   infix  2 wth suchthat return guard when
   infixr 1 || <|> ??
+
+  val cntr = ref 0
+  val polyMap : (Ast.name * Ast.id) list ref = ref []
+  fun getPoly n =
+      (case List.find (fn (x, _) => x = n) (!polyMap) of
+	   SOME (_, i) => i
+	 | NONE => let val i = !cntr
+		   in i before (cntr := i+1; polyMap := (n, i) :: !polyMap) end)
+
 
   fun notIn lst x = List.all (fn y => y <> x) lst
 
@@ -57,7 +67,7 @@ struct
 
   (* types *)
   val tyIdorLN = idOrLongName wth tyOfIol
-  val poly = CharParser.char #"'" >> ident wth Ast.TyPoly
+  val poly = CharParser.char #"'" >> ident wth Ast.TyPoly o getPoly
 
   fun arTy () = chainr1 ($apTy) (TP.reservedOp "->" return Ast.TyArrow)
   and apTy () = chainl1 ($atTy) (succeed Ast.TyApp)
@@ -111,5 +121,7 @@ struct
   val exp = $bExp
   val def = $tdef
 
-end
+  val parseExp = CharParser.parseString exp
+  val parseDef = CharParser.parseString def
 
+end
