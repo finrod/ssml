@@ -2,8 +2,9 @@ structure Reserved :> MINI_LANGUAGE_DEF =
 struct
 
   val reservedNames = ["val", "fun", "type", "rec", "let", "in", "end", "fn",
-		       "signature", "sig", "structure", "struct"]
-  val reservedOpNames = ["=>", ":", "=", "->", "*"]
+		       "signature", "sig", "structure", "struct",
+		       "bool", "int", "true", "false", "if", "then", "else"]
+  val reservedOpNames = ["=>", ":", "=", "->"]
 
 end
 
@@ -60,7 +61,7 @@ struct
       end
 
   (* kind annotations *)
-  fun atKnd () = (TP.reservedOp "*" return Ast.KTy) <|> TP.parens ($ tKind)
+  fun atKnd () = (TP.operator -- (fn "*" => succeed Ast.KTy | _ => fail "" ?? "kind")) <|> TP.parens ($ tKind)
   and tKind () = chainr1 ($ atKnd) (TP.reservedOp "->" return Ast.KArr)
 
   val kind = $ tKind
@@ -72,7 +73,7 @@ struct
   fun arTy () = chainr1 ($apTy) (TP.reservedOp "->" return Ast.TyArrow)
   and apTy () = chainl1 ($atTy) (succeed Ast.TyApp)
   and atTy () = tyIdorLN <|> poly <|> TP.parens ($ arTy)
-
+	    <|> TP.reserved "int" return Ast.TyInt <|> TP.reserved "bool" return Ast.TyBool
   val typeP = $arTy
 
   (* function arguments *)
@@ -90,13 +91,13 @@ struct
 		  | (i, Sum.INR t) => Ast.DTyDef (i, t, NONE))
 	 ?? "declaration"
 
+  val boolP = TP.reserved "true" return true <|> TP.reserved "false" return false
+
   fun tdef () = TP.reserved "val" >> (opt (TP.reserved "rec") wth Option.isSome) &&
 	        ident && TP.reservedOp "=" >> $bExp
 		wth (fn (true,  (i, e)) => Ast.ValRecBind (i, NONE, e)
 		      | (false, (i, e)) => Ast.ValBind (i, NONE, e))
-	    <|> TP.reserved "struct" >> repeat1 ($tdef) << TP.reserved "end"
-	        wth (fn ds => Ast.Struct (ds, NONE))
-	    <|> TP.reserved "structure" >> ident && opt tyann && TP.reservedOp "=" >> $tdef
+	    <|> TP.reserved "structure" >> ident && opt tyann && TP.reservedOp "=" >> $bExp
 		wth (fn (i, (ot, d)) => Ast.StructDec (i, d, ot))
 	    <|> TP.reserved "type" >> ident && TP.reservedOp "=" >> typeP
 		wth (fn (i, t) => Ast.TyDef (i, t, NONE))
@@ -116,7 +117,9 @@ struct
   and anExp () = $apExp && opt tyann wth (fn (e, SOME t) => Ast.Ann (e, t)
 					   | (e, NONE) => e)
   and apExp () = chainl1 ($atExp) (succeed (fn (e1, e2) => Ast.App (e1, e2, NONE)))
-  and atExp () = idOrLongName wth expOfIol <|> TP.parens ($bExp)
+  and atExp () = idOrLongName wth expOfIol <|> boolP wth Ast.VBool <|> TP.integer wth Ast.VInt
+     	     <|> TP.reserved "struct" >> repeat1 ($tdef) << TP.reserved "end"
+	     wth (fn ds => Ast.Struct (ds, NONE)) <|> TP.parens ($bExp)
 
   val exp = $bExp
   val def = $tdef

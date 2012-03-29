@@ -57,6 +57,8 @@ struct
 	     | CPair (TDef (k, _), _) => (k, t)
 	     | _ => raise Fail "Not a type declaration"
 	end
+      | infKnd _ (A.TyInt) = (A.KTy, A.TyInt)
+      | infKnd _ (A.TyBool) = (A.KTy, A.TyBool)
     and kindSig E [] = (E, [])
       | kindSig E (d :: ds) =
 	(case d of
@@ -241,7 +243,6 @@ struct
 
     fun getType (A.ValBind (_, SOME t, _)) = t
       | getType (A.ValRecBind (_, SOME t, _)) = t
-      | getType (A.Struct (_, SOME t)) = t
       | getType (A.StructDec (_, _, SOME t)) = t
       | getType _ = raise Fail "Blah"
 
@@ -276,10 +277,24 @@ struct
 	end
       | tyinfExp env (A.Ann (e, t)) =
 	let val (t', e') = tyinfExp env e
+	    (* probably check typing rather then solving constraints *)
 	    val _ = solve env (t', t)
 	in (t, e')
 	end
-      | tyinfExp env (e as A.Literal t) = (t, e)
+      (*| tyinfExp env (e as A.Literal t) = (t, e)*)
+      | tyinfExp env (e as A.Struct (ds, NONE)) =
+	let val (env', ds') = tyinfDecList env ds
+	    fun toDecl (A.ValBind (x, SOME t, _)) = A.DValDec (x, t)
+	      | toDecl (A.ValRecBind (x, SOME t, _)) = A.DValDec (x, t)
+	      | toDecl (A.StructDec (x, d, SOME t)) = A.DValDec (x, t)
+	      | toDecl (A.SigDec (x, SOME (y, k), t)) =
+		A.DTyDef (x, A.TyLam (y, k, t), SOME (A.KArr (k, A.KSig)))
+	      | toDecl (A.SigDec (x, NONE, t)) = A.DTyDef (x, t, SOME A.KSig)
+	      | toDecl (A.TyDef args) = A.DTyDef args
+	      | toDecl d = raise Fail "Untyped definition located"
+	    val decls = List.map toDecl ds'
+	in (A.TySig decls, A.Struct (ds', SOME (A.TySig decls)))
+	end
       | tyinfExp env (e as A.LongName (xs, x, NONE)) =
 	let fun step (x, env) = (case T.lookup x env of
 				     T.CPair (T.VDec (A.TySig ds), env') => #1 (T.kindSig env' ds)
@@ -290,6 +305,8 @@ struct
 	       T.CPair (T.VDec t, env'') => (t, A.LongName (xs, x, SOME t))
 	     | _ => raise Fail "Not a value"
 	end
+      | tyinfExp _ (e as A.VInt n)  = (A.TyInt, e)
+      | tyinfExp _ (e as A.VBool b) = (A.TyBool, e)
       | tyinfExp env e =
         raise (Fail ("Unhandled expression in tyinfExp: " ^ A.ppexp e))
 
@@ -320,33 +337,17 @@ struct
 	    val kt = T.infKnd env nt
 	in ((x, T.CPair (T.TDef kt, env)) :: env, A.SigDec (x, ps, A.TySig ds'))
 	end
-      | tyinfDec env (d as A.Struct (ds, NONE)) =
-	let val (env', ds') = tyinfDecList env ds
-	    fun toDecl (A.ValBind (x, SOME t, _)) = A.DValDec (x, t)
-	      | toDecl (A.ValRecBind (x, SOME t, _)) = A.DValDec (x, t)
-	      | toDecl (A.StructDec (x, d, SOME t)) = A.DValDec (x, t)
-	      | toDecl (A.SigDec (x, SOME (y, k), t)) =
-		A.DTyDef (x, A.TyLam (y, k, t), SOME (A.KArr (k, A.KSig)))
-	      | toDecl (A.SigDec (x, NONE, t)) = A.DTyDef (x, t, SOME A.KSig)
-	      | toDecl (A.TyDef args) = A.DTyDef args
-	      | toDecl (A.Struct ds) = raise Fail "Unbound struct found"
-	      | toDecl d = raise Fail "Untyped definition located"
-	    val decls = List.map toDecl ds'
-	in (env, A.Struct (ds', SOME (A.TySig decls)))
-	end
-      | tyinfDec env (A.StructDec (x, d, NONE)) =
-	let val (env', d') = tyinfDec env d
-	    val t = getType d'
-	    val (k, t') = T.infKnd env' t
-	in if k = A.KSig then ((x, T.CPair (T.VDec t', env')) :: env, A.StructDec (x, d', SOME t'))
+      | tyinfDec env (A.StructDec (x, e, NONE)) =
+	let val (t, e') = tyinfExp env e
+	    val (k, t') = T.infKnd env t
+	in if k = A.KSig then ((x, T.CPair (T.VDec t', env)) :: env, A.StructDec (x, e', SOME t'))
 	   else raise Fail "Blah"
 	end
-      | tyinfDec env (A.StructDec (x, d, SOME t)) =
-	let val (env', d') = tyinfDec env d
-	    val t' = getType d'
-	    val (k, nt) = T.infKnd env' t'
+      | tyinfDec env (A.StructDec (x, e, SOME t)) =
+	let val (t', e') = tyinfExp env e
+	    val (k, nt) = T.infKnd env t'
 	    val _  = if k = A.KSig then () else raise Fail "Blah"
-	in if T.subt t nt env then ((x, T.CPair (T.VDec nt, env')) :: env, A.StructDec (x, d', SOME t))
+	in if T.subt t nt env then ((x, T.CPair (T.VDec t, env)) :: env, A.StructDec (x, e', SOME t))
 	   else raise Fail ("Type mismatch")
 	end
       | tyinfDec env d =

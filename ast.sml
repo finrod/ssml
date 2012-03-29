@@ -19,6 +19,9 @@ struct
       | TyArrow of ty * ty
       | TyLam of name * knd * ty
       | TyLongName of name list * name
+      (* int and bool added (temporarily?) to have some observables *)
+      | TyInt
+      | TyBool
     and dec =
         DTyDef  of name * ty * knd option
       | DTyDec  of name * knd
@@ -34,14 +37,16 @@ struct
       | App of exp * exp * ty option
       | Ann of exp * ty
       | Let of def list * exp * ty option
-      | Literal of ty
       | LongName of name list * name * ty option
+      | Struct of def list * ty option
+      (* same as for types *)
+      | VInt of int
+      | VBool of bool
     and def =
         ValBind of name * ty option * exp
       | ValRecBind of name * ty option * exp
       | TyDef of name * ty * knd option
-      | Struct of def list * ty option
-      | StructDec of name * def * ty option
+      | StructDec of name * exp * ty option
       | SigDec of name * (name * knd) option * ty
     
     val ppid = Int.toString
@@ -88,6 +93,8 @@ struct
       | ppty (TyArrow (t1,t2)) = ppty t1 ^ " -> " ^ ppty t2
       | ppty (TyLam (x, k, tb)) = "(\\ " ^ x ^ " :: " ^ ppknd k ^ ". " ^ ppty tb ^ ")"
       | ppty (TyLongName (xs, x)) = String.concatWith "." xs ^ "." ^ x
+      | ppty TyInt = "int"
+      | ppty TyBool = "bool"
     and ppdec (DTyDef (n, t, ok)) = "type " ^ n ^ " = " ^ ppty t ^
 			      foldO (fn k => " : " ^ ppknd k) "" ok
       | ppdec (DTyDec (n, k)) = "type " ^ n ^ " : " ^ ppknd k
@@ -107,19 +114,22 @@ struct
         "let\n   " ^
             String.concatWith "\n   " (map ppdef l) ^
         "\nin\n   " ^ ppexp e ^ "\nend"
-      | ppexp (Literal t) = "#" ^ ppty t
+      (*| ppexp (Literal t) = "#" ^ ppty t*)
       | ppexp (LongName (xs, x, t)) = String.concatWith "." xs ^ "." ^ x ^ ppann t
+      | ppexp (Struct (l,t)) =
+            "struct\n   " ^ 
+                String.concatWith "\n   " (map ppdef l) ^
+            "\nend" ^ ppann t
+      | ppexp (VInt n) = Int.toString n
+      | ppexp (VBool true)  = "true"
+      | ppexp (VBool false) = "false"
     and ppdef (ValBind (n,t,e)) = "val " ^ n ^ ppann t ^ " = " ^ ppexp e
       | ppdef (ValRecBind (n,t,e)) = 
             "val rec " ^ n ^ ppann t ^ " = " ^ ppexp e
       | ppdef (TyDef (n, t, ok)) = "type " ^ n ^ " = " ^ ppty t ^
 			      foldO (fn k => " : " ^ ppknd k) "" ok
-      | ppdef (Struct (l,t)) =
-            "struct\n   " ^ 
-                String.concatWith "\n   " (map ppdef l) ^
-            "\nend"
       | ppdef (StructDec (n,d,t)) =
-        "structure " ^ n ^ ppann t ^ " = " ^ ppdef d
+        "structure " ^ n ^ ppann t ^ " = " ^ ppexp d
       | ppdef (SigDec (n, ps, t)) =
         "signature " ^ n ^
 	foldO (fn (x, k) => " (" ^ x ^ " : " ^ ppknd k ^ ")") "" ps ^
