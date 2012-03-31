@@ -123,41 +123,75 @@ struct
 
     fun pppat (n, args) = String.concatWith " " (n :: args)
 
-    fun ppexp (Fn (Expl (x, ot),e,t)) = "(fn " ^ x ^ ppann ot ^
-					" => " ^ ppexp e ^ ")" ^ ppann t
-      | ppexp (Fn (Impl (x, tx), e, t)) = "(fn {" ^ x ^ ppann (SOME tx) ^
-					  "} => " ^ ppexp e ^ ")" ^ ppann t
-      | ppexp (Var (n,t)) = "(" ^ n ^ ppann t ^ ")"
-      | ppexp (App (e1,e2,t)) = ppexp e1 ^ " " ^ ppexp e2 ^ ppann t
-      | ppexp (Ann (e,t)) = "(" ^ ppexp e ^ " : " ^ ppty t ^ ")"
-      | ppexp (Let (l,e,t)) = 
+    fun ppexp' pd (Fn (Expl (x, ot),e,t)) = "(fn " ^ x ^ ppann ot ^
+					   " => " ^ ppexp' pd e ^ ")" ^ ppann t
+      | ppexp' pd (Fn (Impl (x, tx), e, t)) = "(fn {" ^ x ^ ppann (SOME tx) ^
+					  "} => " ^ ppexp' pd e ^ ")" ^ ppann t
+      | ppexp' pd (Var (n,t)) = "(" ^ n ^ ppann t ^ ")"
+      | ppexp' pd (App (e1,e2,t)) = ppexp' pd e1 ^ " " ^ ppexp' pd e2 ^ ppann t
+      | ppexp' pd (Ann (e,t)) = "(" ^ ppexp' pd e ^ " : " ^ ppty t ^ ")"
+      | ppexp' pd (Let (l,e,t)) = 
         "let\n   " ^
-            String.concatWith "\n   " (map ppdef l) ^
-        "\nin\n   " ^ ppexp e ^ "\nend"
-      (*| ppexp (Literal t) = "#" ^ ppty t*)
-      | ppexp (LongName (xs, x, t)) = String.concatWith "." xs ^ "." ^ x ^ ppann t
-      | ppexp (Case (e, cs, t)) =
-	       "case " ^ ppexp e ^ " of\n       "
-	       ^ String.concatWith "\n    | " (List.map (fn (p, e) => pppat p ^ " => " ^ ppexp e) cs)
+            String.concatWith "\n   " (map pd l) ^
+        "\nin\n   " ^ ppexp' pd e ^ "\nend"
+      (*| ppexp' pd (Literal t) = "#" ^ ppty t*)
+      | ppexp' pd (LongName (xs, x, t)) = String.concatWith "." xs ^ "." ^ x ^ ppann t
+      | ppexp' pd (Case (e, cs, t)) =
+	       "case " ^ ppexp' pd e ^ " of\n       "
+	       ^ String.concatWith "\n    | " (List.map (fn (p, e) => pppat p ^ " => " ^ ppexp' pd e) cs)
 	       ^ "\nend" ^ ppann t
-      | ppexp (Struct (l,t)) =
+      | ppexp' pd (Struct (l,t)) =
             "struct\n   " ^ 
-                String.concatWith "\n   " (map ppdef l) ^
+                String.concatWith "\n   " (map pd l) ^
             "\nend" ^ ppann t
-      | ppexp (VInt n) = Int.toString n
-    and ppdef (ValBind (n,t,e)) = "val " ^ n ^ ppann t ^ " = " ^ ppexp e
-      | ppdef (ValRecBind (n,t,e)) = 
-            "val rec " ^ n ^ ppann t ^ " = " ^ ppexp e
-      | ppdef (TyDef (n, t, ok)) = "type " ^ n ^ " = " ^ ppty t ^
+      | ppexp' pd (VInt n) = Int.toString n
+
+    fun ppexpnt n pd (Fn (Expl (x, ot),e,t)) =
+	let val s = "fn " ^ x ^ ppann ot ^ " => " ^ ppexpnt 0 pd e
+	in if n > 0 then paren s else s end
+      | ppexpnt n pd (Fn (Impl (x, tx), e, t)) =
+	let val s = "fn {" ^ x ^ ppann (SOME tx) ^ "} => " ^ ppexpnt 0 pd e
+	in if n > 0 then paren s else s end
+      | ppexpnt _ pd (Var (x, t)) = x
+      | ppexpnt n pd (App (e1, e2, t)) = 
+	let val s = ppexpnt 2 pd e1 ^ " " ^ ppexpnt 3 pd e2
+	in if n > 2 then paren s else s end
+      | ppexpnt n pd (Ann (e,t)) = 
+	let val s = ppexpnt 2 pd e ^ " : " ^ ppty t
+	in if n > 1 then paren s else s end
+      | ppexpnt n pd (Let (l, e, t)) = 
+        let val s = "let\n   " ^ String.concatWith "\n   " (map pd l) ^
+		    "\nin\n   " ^ ppexpnt 0 pd e ^ "\nend"
+	in if n > 0 then paren s else s end
+      (*| ppexpnt pd (Literal t) = "#" ^ ppty t*)
+      | ppexpnt _ pd (LongName (xs, x, t)) = String.concatWith "." xs ^ "." ^ x
+      | ppexpnt n pd (Case (e, cs, t)) =
+	let val cs' = List.map (fn (p, e) => pppat p ^ " => " ^ ppexpnt 0 pd e) cs
+	    val s = "case " ^ ppexpnt 0 pd e ^ " of\n       " ^
+		    String.concatWith "\n    | " cs' ^ "\nend"
+	in if n > 0 then paren s else s end
+      | ppexpnt _ pd (Struct (l, t)) =
+            "struct\n   " ^ 
+                String.concatWith "\n   " (map pd l) ^
+            "\nend"
+      | ppexpnt _ pd (VInt n) = Int.toString n
+
+    fun ppdef' pe (ValBind (n,t,e)) = "val " ^ n ^ ppann t ^ " = " ^ pe e
+      | ppdef' pe (ValRecBind (n,t,e)) = 
+            "val rec " ^ n ^ ppann t ^ " = " ^ pe e
+      | ppdef' pe (TyDef (n, t, ok)) = "type " ^ n ^ " = " ^ ppty t ^
 			      foldO (fn k => " : " ^ ppknd k) "" ok
-      | ppdef (Data (x, k, cs)) =
+      | ppdef' pe (Data (x, k, cs)) =
 	"datatype " ^ x ^ " : " ^ ppknd k ^ " = "
 	^ String.concatWith " | " (List.map (fn (n, t) => n ^ " : " ^ ppty t) cs)
-      | ppdef (StructDec (n,d,t)) =
-        "structure " ^ n ^ ppann t ^ " = " ^ ppexp d
-      | ppdef (SigDec (n, ps, t)) =
+      | ppdef' pe (StructDec (n,d,t)) =
+        "structure " ^ n ^ ppann t ^ " = " ^ pe d
+      | ppdef' pe (SigDec (n, ps, t)) =
         "signature " ^ n ^
 	foldO (fn (x, k) => " (" ^ x ^ " : " ^ ppknd k ^ ")") "" ps ^
 	" = " ^ ppty t
+
+    fun ppexp e = ppexpnt 0 (ppdef' ppexp) e
+    val ppdef = ppdef' ppexp
 
 end

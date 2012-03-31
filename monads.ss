@@ -38,3 +38,11 @@ structure ListMonad : MONAD list = struct
   fun return x = Cons x Nil
   fun bind xs f = concat (map f xs)
 end
+
+datatype bool : * = True : bool | False : bool
+
+fun ifv b vl vr =
+  case b of
+    True => vl
+  | False => vr
+  end
