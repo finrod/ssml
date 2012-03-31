@@ -2,7 +2,7 @@ structure Reserved :> MINI_LANGUAGE_DEF =
 struct
 
   val reservedNames = ["val", "fun", "type", "rec", "let", "in", "end", "fn",
-		       "signature", "sig", "structure", "struct",
+		       "signature", "sig", "structure", "struct", "datatype",
 		       "bool", "int", "true", "false", "if", "then", "else"]
   val reservedOpNames = ["=>", ":", "=", "->"]
 
@@ -73,7 +73,7 @@ struct
   fun arTy () = chainr1 ($apTy) (TP.reservedOp "->" return Ast.TyArrow)
   and apTy () = chainl1 ($atTy) (succeed Ast.TyApp)
   and atTy () = tyIdorLN <|> poly <|> TP.parens ($ arTy)
-	    <|> TP.reserved "int" return Ast.TyInt <|> TP.reserved "bool" return Ast.TyBool
+	    <|> TP.reserved "int" return Ast.TyInt
   val typeP = $arTy
 
   (* function arguments *)
@@ -90,8 +90,6 @@ struct
 	    wth (fn (i, Sum.INL k) => Ast.DTyDec (i, k)
 		  | (i, Sum.INR t) => Ast.DTyDef (i, t, NONE))
 	 ?? "declaration"
-
-  val boolP = TP.reserved "true" return true <|> TP.reserved "false" return false
 
   fun tdef () = TP.reserved "val" >> (opt (TP.reserved "rec") wth Option.isSome) &&
 	        ident && TP.reservedOp "=" >> $bExp
@@ -117,7 +115,7 @@ struct
   and anExp () = $apExp && opt tyann wth (fn (e, SOME t) => Ast.Ann (e, t)
 					   | (e, NONE) => e)
   and apExp () = chainl1 ($atExp) (succeed (fn (e1, e2) => Ast.App (e1, e2, NONE)))
-  and atExp () = idOrLongName wth expOfIol <|> boolP wth Ast.VBool <|> TP.integer wth Ast.VInt
+  and atExp () = idOrLongName wth expOfIol <|> TP.integer wth Ast.VInt
      	     <|> TP.reserved "struct" >> repeat1 ($tdef) << TP.reserved "end"
 	     wth (fn ds => Ast.Struct (ds, NONE)) <|> TP.parens ($bExp)
 
@@ -128,5 +126,12 @@ struct
   val parseExp = CharParser.parseString exp
   val parseDef = CharParser.parseString def
   val parseDefList = CharParser.parseString deflist
+
+  fun parseFile fileName =
+      let fun isEol s = (case Stream.front s of Stream.Cons (#"\n", _) => true | _ => false)
+	  val is = Stream.fromTextInstream (TextIO.openIn fileName)
+	  val cs = CoordinatedStream.coordinate isEol (Coord.init fileName) is
+      in CharParser.parseChars (deflist << eos) cs
+      end
 
 end

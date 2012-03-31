@@ -58,7 +58,6 @@ struct
 	     | _ => raise Fail "Not a type declaration"
 	end
       | infKnd _ (A.TyInt) = (A.KTy, A.TyInt)
-      | infKnd _ (A.TyBool) = (A.KTy, A.TyBool)
     and kindSig E [] = (E, [])
       | kindSig E (d :: ds) =
 	(case d of
@@ -74,7 +73,17 @@ struct
 				     val (E', ds') = if k = A.KTy orelse k = A.KSig
 						     then kindSig ((x, CPair (VDec t', E)) :: E) ds
 						     else raise Fail "Not ground type for value"
-				 in (E', A.DValDec (x, t') :: ds') end)
+				 in (E', A.DValDec (x, t') :: ds') end
+	   | A.DData (x, k, cs) =>
+	     let val (E', cs') = evalCons ((x, CPair (TDec k, E)) :: E) cs
+		 val (E'', ds') = kindSig E' ds
+	     in (E'', A.DData (x, k, cs') :: ds') end)
+    and evalCons E [] = (E, [])
+      | evalCons E ((n, t) :: cs) =
+	let val (k, t') = infKnd E t
+	    val _ = if k = A.KTy then () else raise Fail "Kind mismatch"
+	    val (E', cs') = evalCons ((n, CPair (VDec t', E)) :: E) cs
+	in (E', (n, t') :: cs') end
 
     fun plookup xs k = (case List.find (fn (j, _) => j = k) xs of
 			   SOME (_, v) => v
@@ -111,6 +120,8 @@ struct
 	   | _ => (t, E))
       | eval E t = (t, E)
 
+    (* caveat: PM should work as state in tyImp, and as an environment in sigImpl
+     * due to universal quantifier scoping; this is now (hopefully) solved *)
     fun tyImp PM (t1, E1) (t2, E2) =
 	(case (eval E1 t1, eval E2 t2) of
 	     ((A.TyId x, _), (A.TyId y, _)) => x = y
@@ -142,7 +153,11 @@ struct
 
     and sigImpl _ ([], E) _ = true
       | sigImpl PM (d :: ds, E) (es, F) =
-	let fun evalUntil x [] F = NONE
+	let val opm = !PM
+	    fun consUntil x [] F = (NONE, F)
+	      | consUntil x ((n, t) :: cs) F =
+		if x = n then (SOME (VDec t, F), F) else consUntil x cs ((n, CPair (VDec t, F)) :: F)
+	    fun evalUntil x [] F = NONE
 	      | evalUntil x (A.DTyDef (y, t, SOME k) :: es) F =
 		if x = y then SOME (TDef (k, t), F)
 		else evalUntil x es ((y, CPair (TDef (k, t), F)) :: F)
@@ -150,24 +165,51 @@ struct
 		if x = y then SOME (TDec k, F) else evalUntil x es ((y, CPair (TDec k, F)) :: F)
 	      | evalUntil x (A.DValDec (y, t) :: es) F =
 		if x = y then SOME (VDec t, F) else evalUntil x es ((y, CPair (VDec t, F)) :: F)
+	      | evalUntil x (A.DData (y, k, cs) :: es) F =
+		if x = y then SOME (TDec k, F)
+		else (case consUntil x cs ((y, CPair (TDec k, F)) :: F) of
+			  (NONE, F') => evalUntil x es F'
+			| (SOME d, _) => SOME d)
 	      | evalUntil x es F = raise Fail "Not kinded decs"
 	in case d of
 	       A.DTyDef (x, t1, ok) =>
 	       (case evalUntil x es F of
 		    SOME (TDef (k, t2), F') =>
 		    tyImp PM (t1, E) (t2, F') andalso
-		    sigImpl PM (ds, (x, CPair (TDef (k, t1), E)) :: E) (es, F)
+		    (PM := opm; sigImpl PM (ds, (x, CPair (TDef (k, t1), E)) :: E) (es, F))
 		  | _ => false)
 	     | A.DTyDec (x, k) =>
 	       (case evalUntil x es F of
-		    SOME (TDec k', F') => sigImpl PM (ds, (x, CPair (TDec k, E)) :: E) (es, F)
-		  | SOME (cl as (TDef (k', t), F')) => sigImpl PM (ds, (x, CPair cl) :: E) (es, F)
+		    SOME (TDec k', F') => if k = k' then
+					      sigImpl PM (ds, (x, CPair (TDec k, E)) :: E) (es, F)
+					  else false
+		  | SOME (cl as (TDef (k', t), F')) => if k = k' then
+							   sigImpl PM (ds, (x, CPair cl) :: E) (es, F)
+						       else false
 		  | _ => false)
 	     | A.DValDec (x, t1) =>
 	       (case evalUntil x es F of
 		    SOME (VDec t2, F') => tyImp PM (instantiate (ref []) t1, E) (t2, F') andalso
-					  sigImpl PM (ds, (x, CPair (VDec t1, E)) :: E) (es, F)
+					  (PM := opm;
+					   sigImpl PM (ds, (x, CPair (VDec t1, E)) :: E) (es, F))
 		  | _ => false)
+	     | A.DData (x, k, cs) =>
+	       let fun consImpl [] E = SOME E
+		     | consImpl ((n, t1) :: cs) E =
+		       (case evalUntil n es F of
+			    SOME (VDec t2, F') => (print (n ^ " : " ^ (A.ppty t2) ^ "\n"); 
+			    if tyImp PM (instantiate (ref []) t1, E) (t2, F')
+			    then (PM := opm; consImpl cs ((n, CPair (VDec t1, E)) :: E)) else NONE)
+			  | _ => NONE)
+	       in case evalUntil x es F of
+		      SOME (TDec k', F') =>
+		      (print (x ^ " : " ^ (A.ppknd k') ^ "\n"); if k = k' then
+						case consImpl cs ((x, CPair (TDec k, E)) :: E) of
+						    SOME E' => (PM := opm; sigImpl PM (ds, E') (es, F))
+						  | NONE => false
+					    else false)
+		    | _ => false
+	       end
 	end
 
     fun subt t1 t2 env = tyImp (ref []) (t1, env) (t2, env)
@@ -277,7 +319,7 @@ struct
 	end
       | tyinfExp env (A.Ann (e, t)) =
 	let val (t', e') = tyinfExp env e
-	    (* probably check typing rather then solving constraints *)
+	    (* BUG: probably check typing rather then solving constraints *)
 	    val _ = solve env (t', t)
 	in (t, e')
 	end
@@ -305,10 +347,33 @@ struct
 	       T.CPair (T.VDec t, env'') => (t, A.LongName (xs, x, SOME t))
 	     | _ => raise Fail "Not a value"
 	end
+      | tyinfExp env (A.Case (e, cs)) =
+	let val (t, e') = tyinfExp env e
+	    val rt = T.freshTy ()
+	    val cs'  = List.map (fn c => checkCase env t c rt) cs
+	in (rt, A.Case (e', cs'))
+	end
       | tyinfExp _ (e as A.VInt n)  = (A.TyInt, e)
-      | tyinfExp _ (e as A.VBool b) = (A.TyBool, e)
       | tyinfExp env e =
         raise (Fail ("Unhandled expression in tyinfExp: " ^ A.ppexp e))
+
+    and checkCase env ct ((ctor, args), e) rt =
+	let fun foldArgs [] (A.TyArrow _) = raise Fail "Not enough arguments to a constructor"
+	      | foldArgs [] t = ([], t)
+	      | foldArgs (arg :: args) (A.TyArrow (ta, tr)) = let val (bt, t) = foldArgs args tr
+							      in ((arg, ta) :: bt, t) end
+	      | foldArgs (_ :: _) _ = raise Fail "Too many arguments to a constructor"
+	    val (ctype, cenv) = (case T.lookup ctor env of
+				     T.CPair (T.VDec t, env') => (T.instantiate (ref []) t, env')
+				   | _ => raise Fail "Not a constructor")
+	    
+	    val (bargs, nct) = foldArgs args ctype
+	    val _ = solve env (nct, ct)
+	    val env' = List.foldl (fn ((an, at), E) => (an, T.CPair (T.VDec at, E)) :: E) env bargs
+	    val (nrt, e') = tyinfExp env' e
+	    val _ = solve env (nrt, rt)
+	in ((ctor, args), e')
+	end
 
     and tyinfDec env (A.ValBind (i, NONE, e)) =
 	let val k = !T.tyvarCounter
@@ -329,6 +394,9 @@ struct
 	let val kt as (k, t') = T.infKnd env t
 	in ((x, T.CPair (T.TDef kt, env)) :: env, A.TyDef (x, t', SOME k))
 	end
+      | tyinfDec env (d as A.Data (x, k, cs)) =
+	let val (env', cs') = T.evalCons ((x, T.CPair (T.TDec k, env)) :: env) cs
+	in (env', A.Data (x, k, cs')) end
       | tyinfDec env (d as A.SigDec (x, ps, A.TySig ds)) =
 	let val env' = A.foldO (fn (x, k) => (x, T.CPair (T.TDec k, env)) :: env) env ps
 	    val (_, ds') = T.kindSig env' ds
@@ -353,10 +421,12 @@ struct
       | tyinfDec env d =
 	raise Fail ("Unhandled declaration in tyinfDec: " ^ A.ppdef d)
 
-    and tyinfDecList env ds =
-	List.foldl (fn (d, (env, ds)) =>
-		       let val (env', d') = tyinfDec env d
-		       in (env', d'::ds) end) (env, []) ds
+    and tyinfDecList env [] = (env, [])
+      | tyinfDecList env (d :: ds) =
+	let val (env', d') = tyinfDec env d
+	    val (env'', ds') = tyinfDecList env' ds
+	in (env'', d' :: ds')
+	end
 
 end
 
