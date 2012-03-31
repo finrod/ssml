@@ -279,10 +279,18 @@ struct
 
     fun solveList D xs = List.foldl (fn (c, ()) => solve D c) () xs
 
-    fun mkPoly k (t as A.TyVar x) = if k > x then t else A.TyPoly x
-      | mkPoly k (A.TyApp (t1, t2)) = A.TyApp (mkPoly k (force t1), mkPoly k (force t2))
-      | mkPoly k (A.TyArrow (t1, t2)) = A.TyArrow (mkPoly k (force t1), mkPoly k (force t2))
-      | mkPoly k t = t
+    fun mkPoly k t =
+	let val src = ref 0
+	    val map : (int * int) list ref = ref []
+	    fun get x = (case List.find (fn (y, _) => x = y) (!map) of
+			     NONE => let val k = !src
+				     in k before (src := k + 1; map := (x, k) :: !map) end
+			   | SOME (_, k) => k)
+	    fun aux (t as A.TyVar x) = if k > x then t else A.TyPoly (get x)
+	      | aux (A.TyApp (t1, t2)) = A.TyApp (aux (force t1), aux (force t2))
+	      | aux (A.TyArrow (t1, t2)) = A.TyArrow (aux (force t1), aux (force t2))
+	      | aux t = t
+	in aux t end
 
     fun getType (A.ValBind (_, SOME t, _)) = t
       | getType (A.ValRecBind (_, SOME t, _)) = t
