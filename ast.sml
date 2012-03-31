@@ -42,7 +42,7 @@ struct
       | Let of def list * exp * ty option
       | LongName of name list * name * ty option
       | Struct of def list * ty option
-      | Case of exp * (pat * exp) list
+      | Case of exp * (pat * exp) list * ty option
       (* same as for types *)
       | VInt of int
     and def =
@@ -136,10 +136,10 @@ struct
         "\nin\n   " ^ ppexp e ^ "\nend"
       (*| ppexp (Literal t) = "#" ^ ppty t*)
       | ppexp (LongName (xs, x, t)) = String.concatWith "." xs ^ "." ^ x ^ ppann t
-      | ppexp (Case (e, cs)) =
+      | ppexp (Case (e, cs, t)) =
 	       "case " ^ ppexp e ^ " of\n       "
 	       ^ String.concatWith "\n    | " (List.map (fn (p, e) => pppat p ^ " => " ^ ppexp e) cs)
-	       ^ "\nend"
+	       ^ "\nend" ^ ppann t
       | ppexp (Struct (l,t)) =
             "struct\n   " ^ 
                 String.concatWith "\n   " (map ppdef l) ^

@@ -347,11 +347,11 @@ struct
 	       T.CPair (T.VDec t, env'') => (t, A.LongName (xs, x, SOME t))
 	     | _ => raise Fail "Not a value"
 	end
-      | tyinfExp env (A.Case (e, cs)) =
+      | tyinfExp env (A.Case (e, cs, NONE)) =
 	let val (t, e') = tyinfExp env e
 	    val rt = T.freshTy ()
 	    val cs'  = List.map (fn c => checkCase env t c rt) cs
-	in (rt, A.Case (e', cs'))
+	in (rt, A.Case (e', cs', SOME rt))
 	end
       | tyinfExp _ (e as A.VInt n)  = (A.TyInt, e)
       | tyinfExp env e =

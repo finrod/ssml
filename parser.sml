@@ -3,8 +3,8 @@ struct
 
   val reservedNames = ["val", "fun", "type", "rec", "let", "in", "end", "fn",
 		       "signature", "sig", "structure", "struct", "datatype",
-		       "bool", "int", "true", "false", "if", "then", "else"]
-  val reservedOpNames = ["=>", ":", "=", "->"]
+		       "case", "of", "int", "if", "then", "else"]
+  val reservedOpNames = ["=>", ":", "=", "->", "|"]
 
 end
 
@@ -78,18 +78,27 @@ struct
 
   (* function arguments *)
   val tyann = TP.reservedOp ":" >> typeP
+  val kindann = TP.reservedOp ":" >> kind
 
   val args = TP.braces (ident && tyann) wth Ast.Impl
          <|> TP.parens (ident && opt tyann) wth Ast.Expl
 	 <|> ident wth (fn x => Ast.Expl (x, NONE))
 
+  (* datatypes (just insides, w/o the constructor) *)
+  val data = TP.reserved "datatype" >> ident && kindann << TP.reservedOp "="
+	  && separate (ident && tyann) (TP.reservedOp "|") wth flat3
+
   (* declarations (what goes inside a sig) *)
   val dec = TP.reserved "val"  >> ident && tyann wth Ast.DValDec
 	<|> TP.reserved "type" >> ident &&
-	    (TP.reservedOp ":" >> kind wth Sum.INL <|> TP.reservedOp "=" >> typeP wth Sum.INR)
+	    (kindann wth Sum.INL <|> TP.reservedOp "=" >> typeP wth Sum.INR)
 	    wth (fn (i, Sum.INL k) => Ast.DTyDec (i, k)
 		  | (i, Sum.INR t) => Ast.DTyDef (i, t, NONE))
+        <|> data wth Ast.DData
 	 ?? "declaration"
+
+  (* patterns (for now very simple) *)
+  val pat = ident && repeat ident
 
   fun tdef () = TP.reserved "val" >> (opt (TP.reserved "rec") wth Option.isSome) &&
 	        ident && TP.reservedOp "=" >> $bExp
@@ -99,6 +108,7 @@ struct
 		wth (fn (i, (ot, d)) => Ast.StructDec (i, d, ot))
 	    <|> TP.reserved "type" >> ident && TP.reservedOp "=" >> typeP
 		wth (fn (i, t) => Ast.TyDef (i, t, NONE))
+	    <|> data wth Ast.Data
 	    <|> TP.reserved "fun" >> ident && repeat1 args && TP.reservedOp "=" >> $bExp
 		wth (fn (i, (ars, e)) =>
 			Ast.ValRecBind (i, NONE, List.foldr (fn (a, e) => Ast.Fn (a, e, NONE)) e ars))
@@ -111,6 +121,9 @@ struct
 	        wth (fn (x, y) => Ast.Fn (x, y, NONE))
  	    <|> TP.reserved "let" >> repeat1 ($tdef) && TP.reserved "in" >> $bExp << TP.reserved "end"
 	        wth (fn (xs, y) => Ast.Let (xs, y, NONE))
+	    <|> TP.reserved "case" >> $bExp << TP.reserved "of" &&
+	        separate (pat && TP.reservedOp "=>" >> $bExp) (TP.reservedOp "|") << TP.reserved "end"
+		wth (fn (e, cs) => Ast.Case (e, cs, NONE))
 	    <|> $anExp
   and anExp () = $apExp && opt tyann wth (fn (e, SOME t) => Ast.Ann (e, t)
 					   | (e, NONE) => e)
