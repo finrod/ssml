@@ -271,7 +271,8 @@ struct
       | solve D (A.TyPoly a, A.TyPoly b) =
         if a = b then () else raise Fail ("Polymorphic unification")
       | solve D (A.TyApp (t1, c1), A.TyApp (t2, c2)) =
-	(solve D (force t1, force t2); solve D (force c1, force c2))
+	(solve D (force t1, force t2);
+	 solve D (force c1, force c2))
       | solve D (A.TyArrow (t1, t2), A.TyArrow (t3, t4)) =
         (solve D (force t1, force t3); solve D (force t2, force t4))
       | solve D (t1, t2) = raise Fail ("Type error: " ^ A.ppty t1 ^ " =/= " ^ A.ppty t2)
@@ -319,8 +320,8 @@ struct
 	end
       | tyinfExp env (A.Ann (e, t)) =
 	let val (t', e') = tyinfExp env e
-	    (* BUG: probably check typing rather then solving constraints *)
-	    val _ = solve env (t', t)
+	    (* probable BUG: check typing rather then solving constraints? universal quant. issues *)
+	    val _ = solve env (force t', t)
 	in (t, e')
 	end
       (*| tyinfExp env (e as A.Literal t) = (t, e)*)
@@ -365,13 +366,12 @@ struct
 	      | foldArgs (_ :: _) _ = raise Fail "Too many arguments to a constructor"
 	    val (ctype, cenv) = (case T.lookup ctor env of
 				     T.CPair (T.VDec t, env') => (T.instantiate (ref []) t, env')
-				   | _ => raise Fail "Not a constructor")
-	    
+				   | _ => raise Fail "Not a constructor")	    
 	    val (bargs, nct) = foldArgs args ctype
-	    val _ = solve env (nct, ct)
+	    val _ = solve env (force nct, force ct)
 	    val env' = List.foldl (fn ((an, at), E) => (an, T.CPair (T.VDec at, E)) :: E) env bargs
 	    val (nrt, e') = tyinfExp env' e
-	    val _ = solve env (nrt, rt)
+	    val _ = solve env (force nrt, force rt)
 	in ((ctor, args), e')
 	end
 
@@ -385,7 +385,7 @@ struct
 	let val k = !T.tyvarCounter
 	    val t = freshTy ()
 	    val (t', e') = tyinfExp ((i, T.CPair (T.VDec t, env)) :: env) e
-	    val _ = solve env (t, t')
+	    val _ = solve env (force t, force t')
 	    val t'' = mkPoly k (force t')
 	in ((i, T.CPair (T.VDec t'', env)) :: env, A.ValRecBind (i, SOME t'', e'))
 	end
