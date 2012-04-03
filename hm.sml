@@ -44,6 +44,11 @@ struct
 	      | _ => raise Fail ("First-class modules or some weird miskinding in " ^ A.ppty t),
 	   A.TyArrow (t1', t2'))
 	end
+      | infKnd E (t as A.TyImpArr (t1, t2)) =
+	let val (A.KSig, t1') = infKnd E t1
+	    val (k2, t2') = infKnd E t2
+	in (k2, A.TyImpArr (t1', t2'))
+	end
       | infKnd E (A.TyLam (x, k, t)) =
 	let val (kb, tb') = infKnd ((x, CPair (TDec k, E)) :: E) t
 	in (A.KArr (k, kb), A.TyLam (x, k, tb')) end
@@ -100,6 +105,11 @@ struct
 	let val t1' = instantiate P ( t1)
 	    val t2' = instantiate P ( t2)
 	in A.TyArrow (t1', t2')
+	end
+      | instantiate P (A.TyImpArr (t1, t2)) =
+	let val t1' = instantiate P ( t1)
+	    val t2' = instantiate P ( t2)
+	in A.TyImpArr (t1', t2')
 	end
       | instantiate P (A.TyLam (x, k, t)) = A.TyLam (x, k, instantiate P ( t))
       | instantiate P (A.TySig ds) = A.TySig (List.map (dinst P) ds)
@@ -289,6 +299,7 @@ struct
 	    fun aux (t as A.TyVar x) = if k > x then t else A.TyPoly (get x)
 	      | aux (A.TyApp (t1, t2)) = A.TyApp (aux (force t1), aux (force t2))
 	      | aux (A.TyArrow (t1, t2)) = A.TyArrow (aux (force t1), aux (force t2))
+	      | aux (A.TyImpArr (tc, tr)) = A.TyImpArr (aux (force tc), aux (force tr))
 	      | aux t = t
 	in aux t end
 
@@ -297,23 +308,79 @@ struct
       | getType (A.StructDec (_, _, SOME t)) = t
       | getType _ = raise Fail "Blah"
 
-    fun tyinfExp env (A.Fn (a, e, NONE)) =
-	let val (t, i) = (case a of
-			      A.Expl (i, NONE) => (freshTy (), i)
-			    | A.Expl (i, SOME t) => (t, i)
-			    | A.Impl (i, t) => (t, i))
+    fun resolve tc = (print ("Resolve: " ^ A.ppty (forceAll tc) ^ "\n"); A.VInt 1)
+
+    fun solveImpsT (A.TyImpArr (tc, tr), e) =
+	let val ec = resolve tc
+	in solveImpsT (tr, A.App (e, ec, SOME tr))
+	end
+      | solveImpsT (_, e) = e
+
+    fun solveImps' (e as A.Fn (_, _, SOME t)) = solveImpsT (t, e)
+      | solveImps' (e as A.Var (_, SOME t)) = solveImpsT (t, e)
+      | solveImps' (A.App (e1, e2, SOME t)) =
+	solveImpsT (t, A.App (solveImps' e1, solveImps' e2, SOME t))
+      | solveImps' (A.Let (ds, e, SOME t)) = solveImpsT (t, A.Let (ds, solveImps' e, SOME t))
+      | solveImps' (A.Case (e, cs, SOME t)) =
+	let val cs' = map (fn (p, e) => (p, solveImps' e)) cs
+	in solveImpsT (t, A.Case (solveImps' e, cs', SOME t))
+	end
+      | solveImps' e = e
+
+    fun solveImps (A.Case (e, cs, SOME t)) =
+	let val cs' = map (fn (p, e) => (p, solveImps e)) cs
+	in A.Case (solveImps' e, cs', SOME t) end
+      | solveImps (A.App (e1, e2, SOME t)) = A.App (solveImps' e1, solveImps' e2, SOME t)
+      | solveImps (A.Let (ds, e, SOME t)) = A.Let (ds, solveImps e, SOME t)
+      | solveImps e = e
+
+    fun instExp P (A.Fn (a, e, NONE)) =
+	let val a' = (case a of A.Expl (i, NONE) => a
+			      | A.Expl (i, SOME t) => A.Expl (i, SOME (T.instantiate P t))
+			      | A.Impl (i, t) => A.Impl (i, T.instantiate P t))
+	    val e' = instExp P e
+	in A.Fn (a', e', NONE) end
+      | instExp P (A.App (e1, e2, NONE)) = A.App (instExp P e1, instExp P e2, NONE)
+      | instExp P (A.Ann (e, t)) = A.Ann (instExp P e, T.instantiate P t)
+      | instExp P (A.Struct (ds, NONE)) = A.Struct (ds, NONE)
+      | instExp P (A.Case (e, cs, NONE)) =
+	A.Case (instExp P e, map (fn (p, e) => (p, instExp P e)) cs, NONE)
+      | instExp P (A.Let (ds, e, NONE)) = A.Let (ds, instExp P e, NONE)
+      | instExp _ e = e
+
+    fun evalIds env (t as A.TyId x) =
+	(case T.lookup x env of
+	     T.CPair (T.TDef (k, t'), env') => evalIds env' t'
+	   | _ => t)
+      | evalIds env (A.TyApp (t1, t2)) = A.TyApp (evalIds env t1, evalIds env t2)
+      | evalIds env (A.TyArrow (t1, t2)) = A.TyArrow (evalIds env t1, evalIds env t2)
+      | evalIds env (A.TyImpArr (t1, t2)) = A.TyImpArr (evalIds env t1, evalIds env t2)
+      | evalIds _ t = t
+
+    val PolyMap = ref [] : (int * A.ty) list ref
+
+    fun tyinfExp env (A.Fn (A.Expl (i, ot), e, NONE)) =
+	let val t = (case ot of
+			 NONE => freshTy ()
+		       | SOME t => t)
 	    val (t', e') = tyinfExp ((i, T.CPair (T.VDec t, env)) :: env) e
 	    val tx = A.TyArrow (t, t')
-	    val a' = (case a of
-			  A.Expl _ => A.Expl (i, SOME t)
-			| _ => a)
-	in (tx, A.Fn (a', e', SOME tx))
+	in (tx, A.Fn (A.Expl (i, SOME t), e', SOME tx))
+	end
+      | tyinfExp env (A.Fn (A.Impl (i, t), e, NONE)) =
+	let val (t', e') = tyinfExp ((i, T.CPair (T.VDec t, env)) :: env) e
+	    val tx = A.TyImpArr (t, t')
+	in (tx, A.Fn (A.Impl (i, t), e', SOME tx))
 	end
       | tyinfExp env (A.App (e1, e2, NONE)) =
 	let val (t1, e1') = tyinfExp env e1
+	    (*val _ = print ("Left: " ^ A.ppexp e1' ^ ": " ^ A.ppty t1 ^ "\n")*)
 	    val (t2, e2') = tyinfExp env e2
 	    val tr = freshTy ()
-	    val _  = solve env (force t1, A.TyArrow (t2, tr))
+	    fun dropImps t = (case t of A.TyImpArr (tc, tf) => dropImps (force tf)
+				      | _ => t)
+	    (*val _  = print ("Solving " ^ A.ppty (forceAll t1) ^ " ?= " ^ A.ppty (A.TyArrow (forceAll t2, tr)) ^ "\n")*)
+	    val _  = solve env (dropImps (force t1), A.TyArrow (t2, tr))
 	in (tr, A.App (e1', e2', SOME (forceAll tr)))
 	end
       | tyinfExp env (A.Var (x, NONE)) =
@@ -328,7 +395,6 @@ struct
 	end
       | tyinfExp env (A.Ann (e, t)) =
 	let val (t', e') = tyinfExp env e
-	    (* probable BUG: check typing rather then solving constraints? universal quant. issues *)
 	    val _ = solve env (force t', t)
 	in (t, e')
 	end
@@ -348,12 +414,16 @@ struct
 	end
       | tyinfExp env (e as A.LongName (xs, x, NONE)) =
 	let fun step (x, env) = (case T.lookup x env of
-				     T.CPair (T.VDec (A.TySig ds), env') => #1 (T.kindSig env' ds)
-				   | _ => raise Fail "Path not build of structures")
+				     T.CPair (T.VDec t, env') =>
+				     (case T.eval env' t of
+					  (t as A.TySig ds, env'') => #1 (T.kindSig env'' ds)
+					| (t, _) => raise Fail ("Path not built of structures " ^ A.ppty t))
+				   | _ => raise Fail "Very big fail")
 	    val env' = List.foldl step env xs
 	in case T.lookup x env' of
 	       (* TODO: type scopes should be determined for t below *)
-	       T.CPair (T.VDec t, env'') => (t, A.LongName (xs, x, SOME t))
+	       T.CPair (T.VDec t, env'') =>
+	       (T.instantiate (ref []) (evalIds env'' t), A.LongName (xs, x, SOME t))
 	     | _ => raise Fail "Not a value"
 	end
       | tyinfExp env (A.Case (e, cs, NONE)) =
@@ -385,15 +455,17 @@ struct
 
     and tyinfDec env (A.ValBind (i, NONE, e)) =
 	let val k = !T.tyvarCounter
-	    val (t, e') = tyinfExp env e
+	    val (t, e') = tyinfExp env (instExp PolyMap e)
+	    val e'' = solveImps e'
 	    val t' = mkPoly k (force t)
 	in ((i, T.CPair (T.VDec t', env)) :: env, A.ValBind (i, SOME t', e'))
 	end
       | tyinfDec env (A.ValRecBind (i, NONE, e)) =
 	let val k = !T.tyvarCounter
 	    val t = freshTy ()
-	    val (t', e') = tyinfExp ((i, T.CPair (T.VDec t, env)) :: env) e
+	    val (t', e') = tyinfExp ((i, T.CPair (T.VDec t, env)) :: env) (instExp PolyMap e)
 	    val _ = solve env (force t, force t')
+	    val e'' = solveImps e'
 	    val t'' = mkPoly k (force t')
 	in ((i, T.CPair (T.VDec t'', env)) :: env, A.ValRecBind (i, SOME t'', e'))
 	end
@@ -414,13 +486,13 @@ struct
 	in ((x, T.CPair (T.TDef kt, env)) :: env, A.SigDec (x, ps, A.TySig ds'))
 	end
       | tyinfDec env (A.StructDec (x, e, NONE)) =
-	let val (t, e') = tyinfExp env e
+	let val (t, e') = tyinfExp env (instExp PolyMap e)
 	    val (k, t') = T.infKnd env t
 	in if k = A.KSig then ((x, T.CPair (T.VDec t', env)) :: env, A.StructDec (x, e', SOME t'))
 	   else raise Fail "Blah"
 	end
       | tyinfDec env (A.StructDec (x, e, SOME t)) =
-	let val (t', e') = tyinfExp env e
+	let val (t', e') = tyinfExp env (instExp PolyMap e)
 	    val (k, nt) = T.infKnd env t'
 	    val _  = if k = A.KSig then () else raise Fail "Blah"
 	in if T.subt t nt env then ((x, T.CPair (T.VDec t, env)) :: env, A.StructDec (x, e', SOME t))
@@ -431,7 +503,9 @@ struct
 
     and tyinfDecList env [] = (env, [])
       | tyinfDecList env (d :: ds) =
-	let val (env', d') = tyinfDec env d
+	let val oldPM = !PolyMap
+	    val (env', d') = tyinfDec env d
+	    val _ = PolyMap := oldPM
 	    val (env'', ds') = tyinfDecList env' ds
 	in (env'', d' :: ds')
 	end

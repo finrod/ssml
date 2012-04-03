@@ -17,6 +17,7 @@ struct
       | TyApp of ty * ty
       | TySig of dec list
       | TyArrow of ty * ty
+      | TyImpArr of ty * ty
       | TyLam of name * knd * ty
       | TyLongName of name list * name
       (* int added (temporarily?) to have some observables *)
@@ -105,6 +106,9 @@ struct
 		"\nend\n"
 	      | pp' n (TyArrow (t1, t2)) =
 		let val s = pp' 1 t1 ^ " -> " ^ pp' 0 t2
+		in if n > 0 then paren s else s end
+	      | pp' n (TyImpArr (t1, t2)) =
+		let val s = pp' 1 t1 ^ " >-> " ^ pp' 0 t2
 		in if n > 0 then paren s else s end
 	      | pp' n (TyLam (x, k, tb)) = "(\\ " ^ x ^ " :: " ^ ppknd k ^ ". " ^ pp' 0 tb ^ ")"
 	      | pp' _ (TyLongName (xs, x)) = String.concatWith "." xs ^ "." ^ x

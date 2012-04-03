@@ -46,3 +46,7 @@ fun ifv b vl vr =
     True => vl
   | False => vr
   end
+
+fun join {M : MONAD 'm} (t : 'm ('m 'a))  = M.bind t (fn x => x)
+
+val blah = join (Cons (Cons True Nil) Nil)
