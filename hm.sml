@@ -226,6 +226,56 @@ struct
 
 end
 
+structure TCRes =
+struct
+
+  structure A = Ast
+  structure T = TyEval
+
+  (* Instance: a type for which it's defined, a list of parameters
+   * (binding type to a name for resolved exp'n) and the resulting 
+   * expression (a structure, possibly applied to the bound names in params) *)
+  type inst = A.ty * (A.ty * A.name) list * A.exp
+
+  (* instance database: a map from signature name into list of instances *)
+  val DB = ref [] : (A.name * (inst list ref)) list ref
+
+  fun matchInst t [] _ = raise Fail ("No matching instance for type " ^ Ast.ppty t)
+    | matchInst t ((ti, ps, e) :: ts) env =
+      let val P = ref []
+	  val nti = T.instantiate P ti
+      (* val nps = List.map (fn (t, n) => (T.instantiate P t, n)) ps
+	  val env = List.foldl (fn ((t, n), env) => (n, resolve t) :: env) [] nps
+	  fun substApps =*)
+      in if T.subt t ti env then e else matchInst t ts env end
+
+  and findInstance (x, t, env) =
+      (case List.find (fn (y, _) => x = y) (!DB) of
+           NONE => raise Fail ("Undefined signature " ^ x)
+	 | SOME (_, insts) => matchInst t (!insts) env)
+
+  and resolve (A.TyApp (A.TyId x, t), env) = findInstance (x, t, env)
+    | resolve (t, env) = raise Fail ("Not an applied signature passed " ^ A.ppty t)
+
+  fun checkInstance ins insts =
+      print ("Warning: adding instances is unchecked; might cause inconsistency\n")
+
+  (* Only primitive structures can be added as instances at this time *)
+  fun addInstance (e, A.TyApp (A.TyId x, t)) =
+      (case List.find (fn (y, _) => x = y) (!DB) of
+	   SOME (_, insts) => insts := (t, [], e) :: (!insts)
+	 | NONE => print ("No typeclass-like sig for type " ^ x ^ "; instance " ^
+			  A.ppexp e ^ "not added\n"))
+    | addInstance (e, t) = print ("Unable to add instance at type " ^ A.ppty t ^ " (yet!)\n")
+
+  fun addSig (x, A.KArr (k, A.KSig)) =
+      (case List.find (fn (y, _) => x = y) (!DB) of
+	   NONE => (print ("Adding signature " ^ x ^ " to database\n"); DB := (x, ref []) :: (!DB))
+	 | _ => raise Fail ("Signature " ^ x ^ " already declared"))
+    | addSig _ = ()
+
+end
+
 structure HM =
 struct
     structure A = Ast
@@ -308,31 +358,33 @@ struct
       | getType (A.StructDec (_, _, SOME t)) = t
       | getType _ = raise Fail "Blah"
 
-    fun resolve tc = (print ("Resolve: " ^ A.ppty (forceAll tc) ^ "\n"); A.VInt 1)
+    fun resolve (tc, _) = (print ("Resolve: " ^ A.ppty (forceAll tc) ^ "\n"); A.VInt 1)
 
-    fun solveImpsT (A.TyImpArr (tc, tr), e) =
-	let val ec = resolve tc
-	in solveImpsT (tr, A.App (e, ec, SOME tr))
+    fun solveImpsT (A.TyImpArr (tc, tr), e, env) =
+	let val ec = TCRes.resolve (forceAll tc, env)
+	in solveImpsT (tr, A.App (e, ec, SOME tr), env)
 	end
-      | solveImpsT (_, e) = e
+      | solveImpsT (_, e, _) = e
 
-    fun solveImps' (e as A.Fn (_, _, SOME t)) = solveImpsT (t, e)
-      | solveImps' (e as A.Var (_, SOME t)) = solveImpsT (t, e)
-      | solveImps' (A.App (e1, e2, SOME t)) =
-	solveImpsT (t, A.App (solveImps' e1, solveImps' e2, SOME t))
-      | solveImps' (A.Let (ds, e, SOME t)) = solveImpsT (t, A.Let (ds, solveImps' e, SOME t))
-      | solveImps' (A.Case (e, cs, SOME t)) =
-	let val cs' = map (fn (p, e) => (p, solveImps' e)) cs
-	in solveImpsT (t, A.Case (solveImps' e, cs', SOME t))
+    fun solveImps' (e as A.Fn (_, _, SOME t), env) = solveImpsT (t, e, env)
+      | solveImps' (e as A.Var (_, SOME t), env) = solveImpsT (t, e, env)
+      | solveImps' (A.App (e1, e2, SOME t), env) =
+	solveImpsT (t, A.App (solveImps' (e1, env), solveImps' (e2, env), SOME t), env)
+      | solveImps' (A.Let (ds, e, SOME t), env) =
+	solveImpsT (t, A.Let (ds, solveImps' (e, env), SOME t), env)
+      | solveImps' (A.Case (e, cs, SOME t), env) =
+	let val cs' = map (fn (p, e) => (p, solveImps' (e, env))) cs
+	in solveImpsT (t, A.Case (solveImps' (e, env), cs', SOME t), env)
 	end
-      | solveImps' e = e
+      | solveImps' (e, _) = e
 
-    fun solveImps (A.Case (e, cs, SOME t)) =
-	let val cs' = map (fn (p, e) => (p, solveImps e)) cs
-	in A.Case (solveImps' e, cs', SOME t) end
-      | solveImps (A.App (e1, e2, SOME t)) = A.App (solveImps' e1, solveImps' e2, SOME t)
-      | solveImps (A.Let (ds, e, SOME t)) = A.Let (ds, solveImps e, SOME t)
-      | solveImps e = e
+    fun solveImps (A.Case (e, cs, SOME t), env) =
+	let val cs' = map (fn (p, e) => (p, solveImps (e, env))) cs
+	in A.Case (solveImps' (e, env), cs', SOME t) end
+      | solveImps (A.App (e1, e2, SOME t), env) =
+	A.App (solveImps' (e1, env), solveImps' (e2, env), SOME t)
+      | solveImps (A.Let (ds, e, SOME t), env) = A.Let (ds, solveImps (e, env), SOME t)
+      | solveImps (e, _) = e
 
     fun instExp P (A.Fn (a, e, NONE)) =
 	let val a' = (case a of A.Expl (i, NONE) => a
@@ -456,18 +508,18 @@ struct
     and tyinfDec env (A.ValBind (i, NONE, e)) =
 	let val k = !T.tyvarCounter
 	    val (t, e') = tyinfExp env (instExp PolyMap e)
-	    val e'' = solveImps e'
+	    val e'' = solveImps (e', env)
 	    val t' = mkPoly k (force t)
-	in ((i, T.CPair (T.VDec t', env)) :: env, A.ValBind (i, SOME t', e'))
+	in ((i, T.CPair (T.VDec t', env)) :: env, A.ValBind (i, SOME t', e''))
 	end
       | tyinfDec env (A.ValRecBind (i, NONE, e)) =
 	let val k = !T.tyvarCounter
 	    val t = freshTy ()
 	    val (t', e') = tyinfExp ((i, T.CPair (T.VDec t, env)) :: env) (instExp PolyMap e)
 	    val _ = solve env (force t, force t')
-	    val e'' = solveImps e'
+	    val e'' = solveImps (e', env)
 	    val t'' = mkPoly k (force t')
-	in ((i, T.CPair (T.VDec t'', env)) :: env, A.ValRecBind (i, SOME t'', e'))
+	in ((i, T.CPair (T.VDec t'', env)) :: env, A.ValRecBind (i, SOME t'', e''))
 	end
       (* Code slightly duplicated between here and kinding of signature types *)
       | tyinfDec env (d as A.TyDef (x, t, NONE)) =
@@ -483,6 +535,7 @@ struct
 	    val nt = A.foldO (fn (x, k) => A.TyLam (x, k, A.TySig ds'))
 			     (A.TySig ds') ps
 	    val kt = T.infKnd env nt
+	    val _ = TCRes.addSig (x, #1 kt)
 	in ((x, T.CPair (T.TDef kt, env)) :: env, A.SigDec (x, ps, A.TySig ds'))
 	end
       | tyinfDec env (A.StructDec (x, e, NONE)) =
@@ -495,6 +548,7 @@ struct
 	let val (t', e') = tyinfExp env (instExp PolyMap e)
 	    val (k, nt) = T.infKnd env t'
 	    val _  = if k = A.KSig then () else raise Fail "Blah"
+	    val _  = TCRes.addInstance (A.Var (x, SOME t), t)
 	in if T.subt t nt env then ((x, T.CPair (T.VDec t, env)) :: env, A.StructDec (x, e', SOME t))
 	   else raise Fail ("Type mismatch")
 	end

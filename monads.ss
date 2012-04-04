@@ -41,11 +41,37 @@ end
 
 datatype bool : * = True : bool | False : bool
 
-fun ifv b vl vr =
-  case b of
-    True => vl
-  | False => vr
+signature EQ (t : *) = sig
+  val eq : t -> t -> bool
+end
+
+structure BoolEq : EQ bool = struct
+  fun eq b1 b2 =
+    case b1 of True => b2
+             | False => case b2 of True => False
+                                 | False => True
+                        end
+    end
+end
+
+fun and b1 b2 = case b1 of True => b2 | False => False end
+
+structure ListEq = 
+  fn {X : EQ 'a} =>
+  struct
+    fun eq xs ys =
+      case xs of Cons x xs' =>
+        case ys of Cons y ys' =>
+          and (X.eq x y) (eq xs' ys')
+        | Nil => False
+        end
+      | Nil =>
+        case ys of Nil => True
+        | Cons y ys' => False
+        end
+      end
   end
+
 
 fun join {M : MONAD 'm} (t : 'm ('m 'a))  = M.bind t (fn x => x)
 
