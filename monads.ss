@@ -45,24 +45,26 @@ signature EQ (t : *) = sig
   val eq : t -> t -> bool
 end
 
+structure Bool = struct
+  fun and b1 b2 = case b1 of True => b2 | False => False end
+  fun or b1 b2 = case b1 of True => True | False => b2 end
+  fun neg b = case b of True => False | False => True end
+end
+
 structure BoolEq : EQ bool = struct
   fun eq b1 b2 =
     case b1 of True => b2
-             | False => case b2 of True => False
-                                 | False => True
-                        end
+             | False => Bool.neg b2
     end
 end
 
-fun and b1 b2 = case b1 of True => b2 | False => False end
-
-structure ListEq = 
+structure ListEq =
   fn {X : EQ 'a} =>
   struct
     fun eq xs ys =
       case xs of Cons x xs' =>
         case ys of Cons y ys' =>
-          and (X.eq x y) (eq xs' ys')
+          Bool.and (X.eq x y) (eq xs' ys')
         | Nil => False
         end
       | Nil =>
@@ -70,9 +72,22 @@ structure ListEq =
         | Cons y ys' => False
         end
       end
-  end
+  end : EQ (list 'a)
 
 
 fun join {M : MONAD 'm} (t : 'm ('m 'a))  = M.bind t (fn x => x)
 
 val blah = join (Cons (Cons True Nil) Nil)
+
+fun find {E : EQ 'a} xs y =
+  case xs of
+    Cons x xs' =>
+    case E.eq x y of
+      True => Some x
+    | False => find xs' y
+    end
+  | Nil => None
+  end
+
+val blah2 = find (Cons (Cons True Nil) (Cons (Cons False Nil) Nil)) (Cons True Nil)
+

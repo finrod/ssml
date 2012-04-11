@@ -132,37 +132,40 @@ struct
 
     (* caveat: PM should work as state in tyImp, and as an environment in sigImpl
      * due to universal quantifier scoping; this is now (hopefully) solved *)
-    fun tyImp PM (t1, E1) (t2, E2) =
-	(case (eval E1 t1, eval E2 t2) of
+    fun tyImpB hVars PM (t1, E1) (t2, E2) =
+	((*print ("Solving " ^ A.ppty t1 ^ " vs. " ^ A.ppty t2 ^ "\n");*)
+	 case (eval E1 t1, eval E2 t2) of
 	     ((A.TyId x, _), (A.TyId y, _)) => x = y
-	   | ((A.TyVar x, _), (A.TyVar y, _)) => x = y
+	   | (c, (A.TyPoly x, _)) => (case List.find (fn (y, _) => x = y) (!PM) of
+					  SOME (_, c') => tyImpB hVars PM c c'
+					| NONE => true before (PM := (x, c) :: (!PM)))
+	   | ((A.TyVar x, _), (t2, E2)) => hVars (x, t2, E2)
+	   | ((t1, E1), (A.TyVar x, _)) => hVars (x, t1, E1)
+	   (*| ((A.TyVar x, _), (A.TyVar y, _)) => x = y*)
 	   | ((A.TyApp (t11, t12), E1), (A.TyApp (t21, t22), E2)) =>
-	     tyImp PM (t11, E1) (t21, E2) andalso tyImp PM (t12, E1) (t22, E2)
+	     tyImpB hVars PM (t11, E1) (t21, E2) andalso tyImpB hVars PM (t12, E1) (t22, E2)
 	   | ((A.TyLam (x, k, t1), E1), (A.TyLam (y, k', t2), E2)) =>
 	     let val v = freshTy ()
 	     in k = k' andalso
-		tyImp PM (t1, (x, CPair (TDef (k, v), E1)) :: E1)
+		tyImpB hVars PM (t1, (x, CPair (TDef (k, v), E1)) :: E1)
 		      (t2, (y, CPair (TDef (k, v), E2)) :: E2)
 	     end
 	   | ((A.TyArrow (t11, t12), E1), (A.TyArrow (t21, t22), E2)) =>
-	     tyImp PM (t11, E1) (t21, E2) andalso tyImp PM (t12, E1) (t22, E2)
+	     tyImpB hVars PM (t11, E1) (t21, E2) andalso tyImpB hVars PM (t12, E1) (t22, E2)
 	   | ((A.TyLongName ([], x), E1), (A.TyLongName ([], y), E2)) =>
-	     tyImp PM (A.TyId x, E1) (A.TyId y, E2)
+	     tyImpB hVars PM (A.TyId x, E1) (A.TyId y, E2)
 	   | ((A.TyLongName (x::xs, t), E1), (A.TyLongName (y::ys, u), E2)) =>
 	     (case (lookup x E1, lookup y E2) of
 		  (CPair (VDec (tl as A.TySig dl), E1'), CPair (VDec (tr as A.TySig dr), E2')) =>
-		  tyImp PM (tl, E1') (tr, E2') andalso
-		  tyImp PM (A.TyLongName (xs, t), #1 (kindSig E1' dl))
+		  tyImpB hVars PM (tl, E1') (tr, E2') andalso
+		  tyImpB hVars PM (A.TyLongName (xs, t), #1 (kindSig E1' dl))
 			(A.TyLongName (ys, u), #1 (kindSig E2' dr))
 		| _ => raise Fail "Ill kinded longname types or some shit")
-	   | ((A.TySig ds, E1), (A.TySig es, E2)) => sigImpl PM (ds, E1) (es, E2)
-	   | (c, (A.TyPoly x, _)) => (case List.find (fn (y, _) => x = y) (!PM) of
-					  SOME (_, c') => tyImp PM c c'
-					| NONE => true before (PM := (x, c) :: (!PM)))
+	   | ((A.TySig ds, E1), (A.TySig es, E2)) => sigImplB hVars PM (ds, E1) (es, E2)
 	   | _ => raise Fail ("Types " ^ A.ppty t1 ^ " and " ^ A.ppty t2 ^ " not equal"))
 
-    and sigImpl _ ([], E) _ = true
-      | sigImpl PM (d :: ds, E) (es, F) =
+    and sigImplB _ _ ([], E) _ = true
+      | sigImplB hVars PM (d :: ds, E) (es, F) =
 	let val opm = !PM
 	    fun consUntil x [] F = (NONE, F)
 	      | consUntil x ((n, t) :: cs) F =
@@ -185,42 +188,47 @@ struct
 	       A.DTyDef (x, t1, ok) =>
 	       (case evalUntil x es F of
 		    SOME (TDef (k, t2), F') =>
-		    tyImp PM (t1, E) (t2, F') andalso
-		    (PM := opm; sigImpl PM (ds, (x, CPair (TDef (k, t1), E)) :: E) (es, F))
+		    tyImpB hVars PM (t1, E) (t2, F') andalso
+		    (PM := opm; sigImplB hVars PM (ds, (x, CPair (TDef (k, t1), E)) :: E) (es, F))
 		  | _ => false)
 	     | A.DTyDec (x, k) =>
 	       (case evalUntil x es F of
 		    SOME (TDec k', F') => if k = k' then
-					      sigImpl PM (ds, (x, CPair (TDec k, E)) :: E) (es, F)
+					      sigImplB hVars PM (ds, (x, CPair (TDec k, E)) :: E) (es, F)
 					  else false
 		  | SOME (cl as (TDef (k', t), F')) => if k = k' then
-							   sigImpl PM (ds, (x, CPair cl) :: E) (es, F)
+							   sigImplB hVars PM (ds, (x, CPair cl) :: E) (es, F)
 						       else false
 		  | _ => false)
 	     | A.DValDec (x, t1) =>
 	       (case evalUntil x es F of
-		    SOME (VDec t2, F') => tyImp PM (instantiate (ref []) t1, E) (t2, F') andalso
+		    SOME (VDec t2, F') => tyImpB hVars PM (instantiate (ref []) t1, E) (t2, F') andalso
 					  (PM := opm;
-					   sigImpl PM (ds, (x, CPair (VDec t1, E)) :: E) (es, F))
+					   sigImplB hVars PM (ds, (x, CPair (VDec t1, E)) :: E) (es, F))
 		  | _ => false)
 	     | A.DData (x, k, cs) =>
 	       let fun consImpl [] E = SOME E
 		     | consImpl ((n, t1) :: cs) E =
 		       (case evalUntil n es F of
 			    SOME (VDec t2, F') => (print (n ^ " : " ^ (A.ppty t2) ^ "\n"); 
-			    if tyImp PM (instantiate (ref []) t1, E) (t2, F')
+			    if tyImpB hVars PM (instantiate (ref []) t1, E) (t2, F')
 			    then (PM := opm; consImpl cs ((n, CPair (VDec t1, E)) :: E)) else NONE)
 			  | _ => NONE)
 	       in case evalUntil x es F of
 		      SOME (TDec k', F') =>
 		      (print (x ^ " : " ^ (A.ppknd k') ^ "\n"); if k = k' then
 						case consImpl cs ((x, CPair (TDec k, E)) :: E) of
-						    SOME E' => (PM := opm; sigImpl PM (ds, E') (es, F))
+						    SOME E' => (PM := opm; sigImplB hVars PM (ds, E') (es, F))
 						  | NONE => false
 					    else false)
 		    | _ => false
 	       end
 	end
+
+    fun defVarHandler (x, A.TyVar y, t) = x = y
+      | defVarHandler _ = false
+    val tyImp = tyImpB defVarHandler
+    val sigImpl = sigImplB defVarHandler
 
     fun subt t1 t2 env = tyImp (ref []) (t1, env) (t2, env)
 
@@ -240,33 +248,74 @@ struct
   (* instance database: a map from signature name into list of instances *)
   val DB = ref [] : (A.name * (inst list ref)) list ref
 
+  fun reset () = DB := []
+
+  fun bindVars P (x, t, env) = (case List.find (fn (y, _) => x = y) (!P) of
+				    SOME (_, t') => T.subt t t' env
+						  (*raise Fail ("Inconsistent instantiations "^ A.ppty t ^ " and " ^ A.ppty t')*)
+				| NONE => (P := (x, t) :: !P; true))
+
+  fun substin P R =
+      let fun sub (x, A.TyVar y) =
+	      (case List.find (fn (z, _) => z = y) R of
+		   SOME (_, t) => (x, t)
+		 | NONE => (x, A.TyVar y))
+	  val nP = map sub (!P)
+      in P := nP end
+
+  fun showP P = List.foldl (fn ((x, y), s) => s ^ ", " ^ "(" ^ Int.toString x ^ ", " ^ Ast.ppty y ^ ")") "[" P ^ "]"
+
   fun matchInst t [] _ = raise Fail ("No matching instance for type " ^ Ast.ppty t)
     | matchInst t ((ti, ps, e) :: ts) env =
-      let val P = ref []
+      let (*val _ = print ("Matching " ^ A.ppty t ^ " with " ^ A.ppty ti ^ "\n")*)
+	  val P = ref []
 	  val nti = T.instantiate P ti
+	  val R = ref []
+      in if (T.tyImpB (bindVars R) (ref []) (t, env) (nti, env) handle _ => false) then (*T.subt t ti env then*)
+	     let val _ = substin P (!R)
+		 val nps = List.map (fn (t, n) => (n, resolve (T.instantiate P t, env))) ps
+		 fun substApps (A.App (l, A.Var (n, otn), ot)) =
+		     let val nl = substApps l
+		     in case List.find (fn (m, _) => n = m) nps of
+			    SOME (_, e) => A.App (nl, e, ot)
+			  | NONE => A.App (nl, A.Var (n, otn), ot)
+		     end
+		   | substApps e = e
+	     in substApps e end
+	 else matchInst t ts env end
+
       (* val nps = List.map (fn (t, n) => (T.instantiate P t, n)) ps
 	  val env = List.foldl (fn ((t, n), env) => (n, resolve t) :: env) [] nps
 	  fun substApps =*)
-      in if T.subt t ti env then e else matchInst t ts env end
 
   and findInstance (x, t, env) =
       (case List.find (fn (y, _) => x = y) (!DB) of
            NONE => raise Fail ("Undefined signature " ^ x)
 	 | SOME (_, insts) => matchInst t (!insts) env)
 
-  and resolve (A.TyApp (A.TyId x, t), env) = findInstance (x, t, env)
+  and resolve (nt as A.TyApp (A.TyId x, t), env) = (print ("Resolving " ^ A.ppty nt ^ "\n"); findInstance (x, t, env))
     | resolve (t, env) = raise Fail ("Not an applied signature passed " ^ A.ppty t)
 
   fun checkInstance ins insts =
       print ("Warning: adding instances is unchecked; might cause inconsistency\n")
 
-  (* Only primitive structures can be added as instances at this time *)
-  fun addInstance (e, A.TyApp (A.TyId x, t)) =
-      (case List.find (fn (y, _) => x = y) (!DB) of
-	   SOME (_, insts) => insts := (t, [], e) :: (!insts)
-	 | NONE => print ("No typeclass-like sig for type " ^ x ^ "; instance " ^
-			  A.ppexp e ^ "not added\n"))
-    | addInstance (e, t) = print ("Unable to add instance at type " ^ A.ppty t ^ " (yet!)\n")
+  val varCntr = ref 0
+  fun freshVar () = let val k = !varCntr in "_var" ^ Int.toString k before varCntr := k + 1 end
+
+  fun splitTy args (A.TyApp (A.TyId x, t)) e = SOME (x, args, t, e)
+    | splitTy args (A.TyImpArr (ta, tr)) e =
+      let val f = freshVar () in
+	  splitTy ((ta, f) :: args) tr (A.App (e, A.Var (f, SOME ta), NONE))
+      end
+    | splitTy _ _ _ = NONE
+
+  fun addInstance (e, t) =
+      (case splitTy [] t e of
+	   SOME (x, args, t, e) => (case List.find (fn (y, _) => x = y) (!DB) of
+					SOME (_, insts) => insts := (t, args, e) :: (!insts)
+				      | NONE => print ("No typeclass-like sig for type " ^ x ^ "; instance " ^
+						       A.ppexp e ^ "not added\n"))
+	 | NONE => print ("Unable to add instance at type " ^ A.ppty t ^ " (yet!)\n"))
 
   fun addSig (x, A.KArr (k, A.KSig)) =
       (case List.find (fn (y, _) => x = y) (!DB) of
@@ -313,7 +362,21 @@ struct
 	   | A.TyVar j => i = j
 	   | _ => false)
 
+    (* This is weird and should probably change *)
     fun pickCanon _ (A.TyVar _, t) = t
+      | pickCanon _ (t, A.TyVar _) = t
+      | pickCanon D (t1, t2) =
+	if T.tyImpB uf_hVars (ref []) (t1, D) (t2, D) then t1
+	else raise Fail ("Non-substitution union called on " ^ A.ppty t1 ^ " and " ^ A.ppty t2)
+
+    and uf_hVars (x, A.TyVar y, D) = ((UF.union (pickCanon D) (getSet x) (getSet y); true) handle _ => false)
+      | uf_hVars (x, t, D) = if occursUF x t then false
+			     else (UF.union (pickCanon D) (getSet x) (UF.new t); true handle _ => false)
+
+    fun solve D (t1, t2) = if T.tyImpB uf_hVars (ref []) (t1, D) (t2, D) then ()
+			   else raise Fail ("Solving " ^ A.ppty t1 ^ " vs. " ^ A.ppty t2 ^ " failed")
+
+(*    fun pickCanon _ (A.TyVar _, t) = t
       | pickCanon _ (t, A.TyVar _) = t
       | pickCanon D (t1, t2) =
 	if T.subt t1 t2 D then t1
@@ -335,7 +398,7 @@ struct
 	 solve D (force c1, force c2))
       | solve D (A.TyArrow (t1, t2), A.TyArrow (t3, t4)) =
         (solve D (force t1, force t3); solve D (force t2, force t4))
-      | solve D (t1, t2) = raise Fail ("Type error: " ^ A.ppty t1 ^ " =/= " ^ A.ppty t2)
+      | solve D (t1, t2) = raise Fail ("Type error: " ^ A.ppty t1 ^ " =/= " ^ A.ppty t2)*)
 
     fun solveList D xs = List.foldl (fn (c, ()) => solve D c) () xs
 
@@ -516,7 +579,10 @@ struct
 	let val k = !T.tyvarCounter
 	    val t = freshTy ()
 	    val (t', e') = tyinfExp ((i, T.CPair (T.VDec t, env)) :: env) (instExp PolyMap e)
-	    val _ = solve env (force t, force t')
+	    (*val _  = print ("Solving " ^ A.ppty (forceAll t) ^ " ?= " ^ A.ppty (forceAll t') ^ "\n")*)
+	    fun dropImps t = (case t of A.TyImpArr (tc, tf) => dropImps (force tf)
+				      | _ => t)
+	    val _ = solve env (force t, dropImps (force t'))
 	    val e'' = solveImps (e', env)
 	    val t'' = mkPoly k (force t')
 	in ((i, T.CPair (T.VDec t'', env)) :: env, A.ValRecBind (i, SOME t'', e''))
@@ -539,18 +605,22 @@ struct
 	in ((x, T.CPair (T.TDef kt, env)) :: env, A.SigDec (x, ps, A.TySig ds'))
 	end
       | tyinfDec env (A.StructDec (x, e, NONE)) =
-	let val (t, e') = tyinfExp env (instExp PolyMap e)
+	let val i = !T.tyvarCounter
+	    val (t, e') = tyinfExp env (instExp PolyMap e)
 	    val (k, t') = T.infKnd env t
-	in if k = A.KSig then ((x, T.CPair (T.VDec t', env)) :: env, A.StructDec (x, e', SOME t'))
+	    val t'' = mkPoly i (force t')
+	in if k = A.KSig then
+	       ((x, T.CPair (T.VDec t'', env)) :: env, A.StructDec (x, e', SOME t''))
+	       before TCRes.addInstance (A.Var (x, SOME t''), t'')
 	   else raise Fail "Blah"
 	end
-      | tyinfDec env (A.StructDec (x, e, SOME t)) =
+      | tyinfDec env (d as A.StructDec (x, e, SOME t)) =
 	let val (t', e') = tyinfExp env (instExp PolyMap e)
 	    val (k, nt) = T.infKnd env t'
 	    val _  = if k = A.KSig then () else raise Fail "Blah"
 	    val _  = TCRes.addInstance (A.Var (x, SOME t), t)
 	in if T.subt t nt env then ((x, T.CPair (T.VDec t, env)) :: env, A.StructDec (x, e', SOME t))
-	   else raise Fail ("Type mismatch")
+	   else raise Fail ("Type mismatch at " ^ A.ppdef d)
 	end
       | tyinfDec env d =
 	raise Fail ("Unhandled declaration in tyinfDec: " ^ A.ppdef d)
