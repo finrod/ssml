@@ -75,7 +75,7 @@ structure ListEq =
   end : EQ (list 'a)
 
 
-fun join {M : MONAD 'm} (t : 'm ('m 'a))  = M.bind t (fn x => x)
+fun join {M : MONAD 'm} t = M.bind t (fn x => x)
 
 val blah = join (Cons (Cons True Nil) Nil)
 
@@ -87,6 +87,12 @@ fun find {E : EQ 'a} xs y =
     | False => find xs' y
     end
   | Nil => None
+  end
+
+fun findToList {E : EQ 'a} xs y =
+  case find xs y of
+    Some x => Cons x Nil
+  | None => Nil
   end
 
 val blah2 = find (Cons (Cons True Nil) (Cons (Cons False Nil) Nil)) (Cons True Nil)

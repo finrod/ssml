@@ -263,7 +263,7 @@ struct
 	  val nP = map sub (!P)
       in P := nP end
 
-  fun showP P = List.foldl (fn ((x, y), s) => s ^ ", " ^ "(" ^ Int.toString x ^ ", " ^ Ast.ppty y ^ ")") "[" P ^ "]"
+  (*fun showP P = List.foldl (fn ((x, y), s) => s ^ ", " ^ "(" ^ Int.toString x ^ ", " ^ Ast.ppty y ^ ")") "[" P ^ "]"*)
 
   fun matchInst t [] _ = raise Fail ("No matching instance for type " ^ Ast.ppty t)
     | matchInst t ((ti, ps, e) :: ts) env =
@@ -271,7 +271,7 @@ struct
 	  val P = ref []
 	  val nti = T.instantiate P ti
 	  val R = ref []
-      in if (T.tyImpB (bindVars R) (ref []) (t, env) (nti, env) handle _ => false) then (*T.subt t ti env then*)
+      in if (T.tyImpB (bindVars R) (ref []) (t, env) (nti, env) handle _ => false) then
 	     let val _ = substin P (!R)
 		 val nps = List.map (fn (t, n) => (n, resolve (T.instantiate P t, env))) ps
 		 fun substApps (A.App (l, A.Var (n, otn), ot)) =
@@ -283,10 +283,6 @@ struct
 		   | substApps e = e
 	     in substApps e end
 	 else matchInst t ts env end
-
-      (* val nps = List.map (fn (t, n) => (T.instantiate P t, n)) ps
-	  val env = List.foldl (fn ((t, n), env) => (n, resolve t) :: env) [] nps
-	  fun substApps =*)
 
   and findInstance (x, t, env) =
       (case List.find (fn (y, _) => x = y) (!DB) of
@@ -316,6 +312,16 @@ struct
 				      | NONE => print ("No typeclass-like sig for type " ^ x ^ "; instance " ^
 						       A.ppexp e ^ "not added\n"))
 	 | NONE => print ("Unable to add instance at type " ^ A.ppty t ^ " (yet!)\n"))
+
+  fun eraseInstance (e, t) =
+      (case splitTy [] t e of
+	   SOME (x, args, t, e) => (case List.find (fn (y, _) => x = y) (!DB) of
+					(* temporary instances always added in a stack-like manner,
+					 * but this should probably change at some point *)
+					SOME (_, insts) => insts := tl (!insts) 
+				      | NONE => print ("No typeclass-like sig for type " ^ x ^ "; instance " ^
+						       A.ppexp e ^ "not removed\n"))
+	 | NONE => print ("Unable to remove instance at type " ^ A.ppty t ^ "\n"))
 
   fun addSig (x, A.KArr (k, A.KSig)) =
       (case List.find (fn (y, _) => x = y) (!DB) of
@@ -429,7 +435,14 @@ struct
 	end
       | solveImpsT (_, e, _) = e
 
-    fun solveImps' (e as A.Fn (_, _, SOME t), env) = solveImpsT (t, e, env)
+    fun solveImps' (A.Fn (A.Impl (i, t), e, SOME tf), env) =
+	let val () = TCRes.addInstance (A.Var (i, SOME t), t)
+	    val e' = solveImps' (e, (i, T.CPair (T.VDec t, env)) :: env)
+	    val () = TCRes.eraseInstance (A.Var (i, SOME t), t)
+	in solveImpsT (tf, A.Fn (A.Impl (i, t), e', SOME tf), env) end
+      | solveImps' (A.Fn (A.Expl (i, SOME t), e, SOME tf), env) =
+	let val e' = solveImps' (e, (i, T.CPair (T.VDec t, env)) :: env)
+	in solveImpsT (tf, A.Fn (A.Expl (i, SOME t), e', SOME tf), env) end
       | solveImps' (e as A.Var (_, SOME t), env) = solveImpsT (t, e, env)
       | solveImps' (A.App (e1, e2, SOME t), env) =
 	solveImpsT (t, A.App (solveImps' (e1, env), solveImps' (e2, env), SOME t), env)
@@ -447,6 +460,14 @@ struct
       | solveImps (A.App (e1, e2, SOME t), env) =
 	A.App (solveImps' (e1, env), solveImps' (e2, env), SOME t)
       | solveImps (A.Let (ds, e, SOME t), env) = A.Let (ds, solveImps (e, env), SOME t)
+      | solveImps (A.Fn (A.Impl (i, t), e, SOME tf), env) =
+	let val () = TCRes.addInstance (A.Var (i, SOME t), t)
+	    val e' = solveImps (e, (i, T.CPair (T.VDec t, env)) :: env)
+	    val () = TCRes.eraseInstance (A.Var (i, SOME t), t)
+	in A.Fn (A.Impl (i, t), e', SOME tf) end
+      | solveImps (A.Fn (A.Expl (i, SOME t), e, SOME tf), env) =
+	let val e' = solveImps (e, (i, T.CPair (T.VDec t, env)) :: env)
+	in A.Fn (A.Expl (i, SOME t), e', SOME tf) end
       | solveImps (e, _) = e
 
     fun instExp P (A.Fn (a, e, NONE)) =
@@ -483,8 +504,10 @@ struct
 	in (tx, A.Fn (A.Expl (i, SOME t), e', SOME tx))
 	end
       | tyinfExp env (A.Fn (A.Impl (i, t), e, NONE)) =
-	let val (t', e') = tyinfExp ((i, T.CPair (T.VDec t, env)) :: env) e
+	let val () = TCRes.addInstance (A.Var (i, SOME t), t)
+	    val (t', e') = tyinfExp ((i, T.CPair (T.VDec t, env)) :: env) e
 	    val tx = A.TyImpArr (t, t')
+	    val () = TCRes.eraseInstance (A.Var (i, SOME t), t)
 	in (tx, A.Fn (A.Impl (i, t), e', SOME tx))
 	end
       | tyinfExp env (A.App (e1, e2, NONE)) =
